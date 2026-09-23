@@ -1,5 +1,8 @@
 # Vestry
 
+[![npm](https://img.shields.io/npm/v/@chronicle.app/vestry?label=npm)](https://www.npmjs.com/package/@chronicle.app/vestry)
+[![CI](https://github.com/chronicle-app/vestry/actions/workflows/ci.yml/badge.svg)](https://github.com/chronicle-app/vestry/actions/workflows/ci.yml)
+
 A personal digital archiving CLI for packaging, verifying, and tracking your
 records and exports.
 
