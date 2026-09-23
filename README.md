@@ -22,17 +22,45 @@ similarity check for now; a request to release it is pending.
 
 ## Usage
 
-```sh
-vestry create ./photos-2019          # folder becomes a package, in place
-vestry create ./instagram-export.zip # ZIP becomes a packed package
-vestry edit ./photos-2019 --title "Photos 2019" --description "Phone camera roll"
-vestry list                          # everything Vestry knows about
-vestry check ./photos-2019           # re-verify the checksums
+**Make a package.** Point `create` at a folder or a ZIP. A folder is sealed
+in place. A ZIP is moved unchanged into a packed package next to it.
 
-vestry cp ./photos-2019 /Volumes/Backup/photos-2019   # verified copy
-vestry mv ./photos-2019 ~/Archive/photos-2019          # verified move
-vestry scan /Volumes/Backup                            # rediscover packages
+```sh
+vestry create ./photos-2019 --as photos19   # folder becomes a package, in place
+vestry create ./instagram-export.zip         # ZIP becomes a packed package
+vestry create ./photos-2019 --plan           # preview without writing
 ```
+
+**Describe it, then find it again.** Titles, descriptions, and notes live in
+the catalog, so editing them never changes package bytes. Commands accept a
+path, a digest prefix, or an alias.
+
+```sh
+vestry edit photos19 --title "Photos 2019" --description "Phone camera roll"
+vestry list                                  # every package, with copy counts
+vestry show photos19                         # description and all known copies
+```
+
+**Check it.** `check` reads every byte and compares it to the manifests.
+
+```sh
+vestry check photos19
+```
+
+**Keep a second copy, and move things around.** `cp` writes a verified copy
+and registers it. `mv` relocates a package but keeps the original in a
+recovery folder until you run the `cleanup` command it prints. `scan` re-finds
+packages on a disk you reorganized or plugged back in.
+
+```sh
+vestry cp photos19 /Volumes/Backup/photos-2019   # verified copy, original kept
+vestry mv photos19 ~/Archive/photos-2019          # verified move
+vestry cleanup OPERATION-ID                       # free the retained original
+vestry scan /Volumes/Backup                       # rediscover packages
+```
+
+Destinations are exact new package paths inside an existing directory. Add
+`--json` to any command for scripts.
 
 ## How it works
 
