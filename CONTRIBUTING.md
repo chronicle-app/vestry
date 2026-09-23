@@ -12,4 +12,4 @@ npm test
 
 Tests run real filesystem operations, including fsync and killing processes at
 publication checkpoints, so the suite takes about a minute. Unlink with
-`npm uninstall -g vestry`.
+`npm uninstall -g @chronicle-app/vestry`.

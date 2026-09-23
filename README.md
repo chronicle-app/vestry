@@ -14,8 +14,11 @@ Vestry.
 Requires Node 22.2 or newer.
 
 ```sh
-npm install -g vestry
+npm install -g @chronicle-app/vestry
 ```
+
+The binary is `vestry`. The bare npm name is blocked by the registry's
+similarity check for now; a request to release it is pending.
 
 ## Usage
 
