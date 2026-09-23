@@ -1,5 +1,5 @@
 {
-  "name": "@chronicle-app/vestry",
+  "name": "@chronicle.app/vestry",
   "version": "0.1.0",
   "description": "A personal digital archiving CLI for packaging, verifying, and tracking your records and exports",
   "keywords": [
