@@ -14,7 +14,7 @@ Vestry.
 
 ## Install
 
-Requires Node 22.2 or newer. To try it without installing:
+To try it without installing:
 
 ```sh
 npx @chronicle.app/vestry --help
