@@ -1,0 +1,73 @@
+import { afterEach, beforeEach, expect, it } from 'vitest';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { canonical, exists } from '../src/fs-util.js';
+import { createPackage, convertInPlace, copyArchive } from '../src/locations.js';
+import { editMetadata, locate, readRegistry } from '../src/registry.js';
+import { verify } from '../src/package.js';
+import { buildBag } from '../src/package.js';
+import { listOperations, recover, type Context } from '../src/operations.js';
+import { checkOutput } from '../src/workflow.js';
+import { digest, walk } from '../src/inventory.js';
+let root: string, source: string, context: Context;
+beforeEach(async () => {
+  root = await canonical(await mkdtemp(join(tmpdir(), 'vestry-metadata-')));
+  source = join(root, 'source'); context = { home: join(root, 'records') };
+  await mkdir(source); await writeFile(join(source, 'README.txt'), 'An original document');
+});
+afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+const cli = (...args: string[]) => spawnSync(process.execPath, ['bin/vestry.js', ...args, '--home', context.home!, '--json'], { encoding: 'utf8' });
+it('creates without description, preserving an original README only as payload', async () => {
+  const created = cli('create', source); expect(created.status, created.stdout).toBe(0);
+  expect(await exists(join(source, 'README.txt'))).toBe(false);
+  expect(await readFile(join(source, 'data/README.txt'), 'utf8')).toBe('An original document');
+  expect(await readFile(join(source, 'bag-info.txt'), 'utf8')).not.toContain('External-Description');
+  const before = await verify(source);
+  await convertInPlace(source, 'packed', context); await convertInPlace(source, 'expanded', context);
+  expect(await verify(source)).toEqual(before);
+});
+it('edits shared catalog metadata while keeping every package byte and both digests unchanged', async () => {
+  const created = await createPackage(source, { ...context, description: 'First description' });
+  const before = await verify(source), bytes = digest('code', await walk(source));
+  const copy = join(root, 'copy'); await copyArchive(source, copy, context);
+  const edited = cli('edit', created.packageDigest as string, '--title', 'My archive', '--description', 'Revised description');
+  expect(edited.status, edited.stdout).toBe(0);
+  const shown = JSON.parse(cli('show', copy).stdout);
+  expect(shown.metadata).toMatchObject({ title: 'My archive', description: 'Revised description' });
+  expect(await verify(source)).toEqual(before);
+  expect(digest('code', await walk(source))).toBe(bytes);
+  expect((await verify(copy)).packageDigest).toBe(before.packageDigest);
+  await editMetadata(source, { description: '' }, context);
+  expect((await locate(source, context)).metadata).toMatchObject({ description: '' });
+});
+it('still checks sealed legacy notes and refuses their deletion', async () => {
+  const legacy = join(root, 'legacy'); await mkdir(legacy);
+  await buildBag(source, legacy, 'Sealed description', 'Legacy');
+  const original = await verify(legacy);
+  await convertInPlace(legacy, 'packed', context);
+  expect((await verify(legacy)).packageDigest).toBe(original.packageDigest);
+  await rm(join(legacy, 'README.txt'));
+  await expect(verify(legacy)).rejects.toMatchObject({ exitCode: 3 });
+});
+it('recovers initial catalog metadata without putting it in package bytes', async () => {
+  await expect(createPackage(source, { ...context, description: 'Recovery notes', onPhase: phase => { if (phase === 'verified') throw new Error('Stop'); } })).rejects.toThrow();
+  const op = (await listOperations(context)).find(op => op.kind === 'create')!;
+  await recover(op.id, checkOutput, context);
+  const id = (await verify(source)).packageDigest;
+  expect((await readRegistry(context)).packages[id].metadata?.description).toBe('Recovery notes');
+  expect(await exists(join(source, 'README.txt'))).toBe(false);
+  await editMetadata(id, { description: 'Later notes' }, context);
+  await recover(op.id, checkOutput, context);
+  expect((await readRegistry(context)).packages[id].metadata?.description).toBe('Later notes');
+});
+it('packages an undescribed draft via create and reserves seal for future metadata snapshots', async () => {
+  const draft = join(root, 'draft'), destination = join(root, 'bag');
+  expect(cli('gather', source, '--into', draft).status).toBe(0);
+  const result = cli('create', draft, '--from-draft', '--output', destination);
+  expect(result.status, result.stdout).toBe(0);
+  expect(await exists(join(destination, 'README.txt'))).toBe(false);
+  expect(await exists(join(draft, '.vestry-draft.json'))).toBe(true);
+  expect(cli('seal', draft, '--output', join(root, 'other')).status).toBe(2);
+});

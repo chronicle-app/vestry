@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.spike/
+*.tsbuildinfo
+.DS_Store

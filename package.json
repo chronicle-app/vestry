@@ -1,0 +1,56 @@
+{
+  "name": "vestry",
+  "version": "0.1.0",
+  "description": "A personal digital archiving CLI for packaging, verifying, and tracking your records and exports",
+  "keywords": [
+    "bagit",
+    "digital-preservation",
+    "archiving",
+    "personal-archive",
+    "checksums",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "Andrew Louis",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chronicle-app/vestry.git"
+  },
+  "homepage": "https://github.com/chronicle-app/vestry#readme",
+  "bugs": {
+    "url": "https://github.com/chronicle-app/vestry/issues"
+  },
+  "type": "module",
+  "bin": {
+    "vestry": "bin/vestry.js"
+  },
+  "files": [
+    "bin",
+    "dist/src",
+    "dist/package.json"
+  ],
+  "engines": {
+    "node": ">=22.2.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepare": "npm run build",
+    "pretest": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm run build"
+  },
+  "dependencies": {
+    "yauzl": "^3.4.0",
+    "yazl": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "@types/yauzl": "^3.4.0",
+    "@types/yazl": "^3.3.1",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
