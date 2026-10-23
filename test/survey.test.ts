@@ -3,26 +3,30 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { canonical } from '../src/fs-util.js';
+import { canonical, exists } from '../src/fs-util.js';
 import { createPackage, convertInPlace } from '../src/locations.js';
 import { verify } from '../src/package.js';
 import type { Context } from '../src/operations.js';
+import { fixture } from './zip-fixture.js';
 
 // A stand-in for the chronicle command: it logs each call and answers as
 // Chronicle's JSON does, finding one export it reads, one it can't, and one
 // above the payload, which Vestry must not keep.
 const fake = `#!/usr/bin/env node
-const { appendFileSync } = require('node:fs');
+const { appendFileSync, existsSync } = require('node:fs');
 const { dirname } = require('node:path');
 const args = process.argv.slice(2), value = flag => args[args.indexOf(flag) + 1];
 appendFileSync(process.env.FAKE_CHRONICLE_LOG, JSON.stringify(args) + '\\n');
 if (args[0] === '--version') console.log('@chronicle.app/cli/9.9.9 test');
+else if (args[0] === 'scan' && args[1].endsWith('notes.zip')) console.log(JSON.stringify([
+  { source: 'notes', strategy: 'archive', plugin: 'notes', status: 'ready', installed: true, root: args[1], config: { input: args[1] } },
+]));
 else if (args[0] === 'scan') console.log(JSON.stringify([
   { source: 'notes', strategy: 'archive', plugin: 'notes', status: 'ready', installed: true, pluginVersion: '1.2.3', root: args[1] + '/export', config: { input: args[1] + '/export', account: 'me' }, evidence: { files: ['notes.json'] } },
   { source: 'old-notes', strategy: 'archive', plugin: 'old-notes', status: 'unsupported', installed: true, root: args[1] + '/old', config: { input: args[1] + '/old' } },
   { source: 'elsewhere', strategy: 'archive', plugin: 'elsewhere', status: 'ready', installed: true, root: dirname(dirname(args[1])), config: {} },
 ]));
-else if (process.env.FAKE_CHRONICLE_FAIL) {
+else if (process.env.FAKE_CHRONICLE_FAIL || !existsSync(value('--input').split('/data.zip/')[0])) {
   console.error(JSON.stringify({ level: 'error', message: 'Nothing at ' + value('--input'), hint: { action: 'Run \`chronicle survey notes --help\` to see what it reads.' } }));
   process.exit(2);
 } else console.log(JSON.stringify([{ source: args[1], strategy: value('--strategy'), status: 'ready', pluginVersion: '1.2.3',
@@ -93,4 +97,20 @@ it('says when Chronicle is missing, and records what it could not count', async 
   const unregistered = join(root, 'unregistered'); await mkdir(unregistered);
   await createPackage(unregistered, { home: join(root, 'other-records') });
   expect(cli(['survey', unregistered]).status).toBe(2);
+});
+
+it('copies a ZIP out of a packed copy for Chronicle to read, and removes the copy after', async () => {
+  const kept = join(root, 'kept'); await mkdir(kept);
+  await writeFile(join(kept, 'notes.zip'), fixture([{ name: 'notes.json', data: Buffer.from('[]') }]));
+  await writeFile(join(kept, 'about.txt'), 'Notes kept as the ZIP they came in');
+  await createPackage(kept, { ...context, packed: true });
+  const surveyed = cli(['survey', kept]);
+  expect(surveyed.status, surveyed.stdout).toBe(0);
+  expect(surveyed.result.readers.find((r: { root: string }) => r.root === 'notes.zip')).toMatchObject({ source: 'notes', outcome: 'counted' });
+  const scans = (await calls()).filter(args => args[0] === 'scan').map(args => args[1]);
+  expect(scans).toEqual([join(kept, 'data.zip'), expect.stringMatching(/scratch.+notes\.zip$/)]);
+  const counted = (await calls()).filter(args => args[0] === 'survey' && args[1] === 'notes').map(args => args[args.indexOf('--input') + 1]);
+  expect(counted).toContainEqual(expect.stringMatching(/scratch.+notes\.zip$/));
+  const scratch = join(context.home!, 'cache', 'scratch');
+  expect(await exists(scratch) ? await readdir(scratch) : []).toEqual([]);
 });
