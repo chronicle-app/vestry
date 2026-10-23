@@ -9,6 +9,7 @@ import { chronicleVersion, scanExports, surveyExport, type KindSurvey } from './
 import { conflict, diagnostic, integrity, usage } from './errors.js';
 import { atomicJson, within } from './fs-util.js';
 import { parseManifest, utf8 } from './inventory.js';
+import { requirePackageDirectory } from './package.js';
 import { homePath, workspace, type Context } from './operations.js';
 import { readRegistry, withReference } from './registry.js';
 import { verifyRecorded } from './workflow.js';
@@ -130,6 +131,7 @@ async function findReaders(path: string, representation: 'expanded' | 'packed', 
 export async function surveyPackage(ref: string, context: Context & { offline?: boolean; location?: string; check?: boolean; find?: boolean } = {}): Promise<Record<string, unknown>> {
   return withReference(ref, context, async resolved => {
     const registered = (state: Awaited<ReturnType<typeof readRegistry>>) => Object.values(state.packages).find(p => p.locations.some(l => l.path === resolved.path && l.state !== 'evicted'));
+    await requirePackageDirectory(resolved.path, resolved.expected);
     const known = registered(await readRegistry(context));
     if (!known) throw usage('Register this package with scan before surveying it.');
     if (!context.check && known.locations.find(l => l.path === resolved.path)!.state === 'changed') throw conflict('This copy changed since it was last checked. Run vestry check on it first.');

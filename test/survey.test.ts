@@ -96,7 +96,12 @@ it('says when Chronicle is missing, and records what it could not count', async 
   expect(await readdir(join(context.home!, 'surveys'))).toHaveLength(1);
   const unregistered = join(root, 'unregistered'); await mkdir(unregistered);
   await createPackage(unregistered, { home: join(root, 'other-records') });
-  expect(cli(['survey', unregistered]).status).toBe(2);
+  expect(cli(['survey', unregistered]).result.error.message).toMatch(/^Register this package with scan/);
+  const shelf = join(root, 'shelf'); await mkdir(join(shelf, 'notes'), { recursive: true });
+  await writeFile(join(shelf, 'notes', 'notes.json'), '[]'); await createPackage(join(shelf, 'notes'), context);
+  const folder = cli(['survey', shelf]);
+  expect(folder.status).toBe(2);
+  expect(folder.result.error.message).toMatch(/^Not a Vestry package: .*No bagit.txt found/);
 });
 
 it('copies a ZIP out of a packed copy for Chronicle to read, and removes the copy after', async () => {
