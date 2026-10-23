@@ -15,6 +15,7 @@ import type { Verification } from './package.js';
 import { Terminal, colorEnabled, type ColorMode } from './terminal.js';
 import { ejectPackage } from './eject.js';
 import { scanDirectory } from './scan.js';
+import { surveyPackage, surveyed } from './survey.js';
 
 const help = `vestry — standalone preservation packages
 
@@ -25,6 +26,7 @@ Usage:
   vestry scan DIR [--make-main]
   vestry show PACKAGE
   vestry check PACKAGE
+  vestry survey PACKAGE [--check] [--find]
   vestry cp PACKAGE DESTINATION
   vestry mv PACKAGE DESTINATION
   vestry eject PACKAGE [--keep-zip]
@@ -93,12 +95,14 @@ pack/unpack convert the selected copy in place. Multiple available copies requir
 a choice interactively, or an explicit path in scripts.
 An explicit path or --location selects a particular copy. --output keeps the source
 and creates a separate copy. Run in-place conversion from outside the package.
+survey counts the records in each export a package holds, using the chronicle
+command. Readers and surveys are kept in Vestry records.
 Processor execution is not yet present.
 `;
 
 const allowed: Record<string, string[]> = {
   eject: ['keep-zip'], show: [], check: ['location'], cp: ['plan'], mv: ['plan'], cleanup: [],
-  scan: ['make-main'],
+  scan: ['make-main'], survey: ['check', 'find', 'location'],
   edit: ['title', 'description', 'notes'],
   create: ['zip-contents', 'keep-zip', 'restart', 'from-draft', 'description', 'readme', 'as', 'packed', 'plan', 'output'], list: [], move: ['to', 'plan'],
   gather: ['into', 'plan'], describe: ['description', 'readme', 'edit'],
@@ -124,7 +128,7 @@ export async function main(args: string[]): Promise<number> {
       parsed = parseArgs({ args, allowPositionals: true, options: {
         output: { type: 'string' }, into: { type: 'string' }, home: { type: 'string' },
         to: { type: 'string' }, main: { type: 'boolean' },
-        'make-main': { type: 'boolean' },
+        'make-main': { type: 'boolean' }, check: { type: 'boolean' }, find: { type: 'boolean' },
         'zip-contents': { type: 'boolean' }, 'keep-zip': { type: 'boolean' }, restart: { type: 'boolean' }, 'from-draft': { type: 'boolean' }, title: { type: 'string' }, notes: { type: 'string' },
         description: { type: 'string' }, readme: { type: 'string' }, edit: { type: 'boolean' },
         as: { type: 'string' }, pin: { type: 'boolean' }, location: { type: 'string' }, 'release-registry-lock': { type: 'boolean' },
@@ -166,7 +170,7 @@ export async function main(args: string[]): Promise<number> {
     if (values.discard && values['release-lock']) throw usage('--discard and --release-lock are mutually exclusive.');
     if (values['release-registry-lock'] && (inputs.length || values.discard || values['release-lock'])) throw usage('--release-registry-lock does not take an operation ID or another recovery flag.');
     if (values.output !== undefined && !values.output.trim()) throw usage('--output requires a nonempty directory path.');
-    if (['eject', 'cp', 'mv', 'move', 'check', 'verify', 'inspect', 'pack', 'unpack'].includes(command)) {
+    if (['eject', 'cp', 'mv', 'move', 'check', 'verify', 'inspect', 'pack', 'unpack', 'survey'].includes(command)) {
       try {
         const selected = await packageReference(inputs[0], { home: values.home, offline: values.offline, location: values.location });
         inputs[0] = selected.path;
@@ -246,6 +250,7 @@ export async function main(args: string[]): Promise<number> {
         result = await locate(inputs[0], context);
         const available = (result.locations as { path: string; availability: string }[]).find(l => l.availability === 'available');
         if (available && await exists(join(available.path, 'README.txt'))) result.sealedReadme = await readFile(join(available.path, 'README.txt'), 'utf8');
+        Object.assign(result, await surveyed(result.contentId as string, context));
         break;
       }
       case 'move': result = await movePackage(inputs[0], values.to!, context); break;
@@ -253,6 +258,7 @@ export async function main(args: string[]): Promise<number> {
       case 'describe': result = await describe(source!, { description: values.description, readme: values.readme, edit: values.edit }); break;
       case 'pack':
       case 'unpack': result = inPlace ? await convertInPlace(inputs[0], command === 'pack' ? 'packed' : 'expanded', { ...context, compress: values.compress, zip64: values.zip64 }) : await withReference(inputs[0], context, r => convertPackage(r.path, values.output!, command === 'pack' ? 'packed' : 'expanded', { ...context, expected: r.expected, compress: values.compress, zip64: values.zip64 })); break;
+      case 'survey': result = await surveyPackage(inputs[0], { ...context, check: values.check, find: values.find }); break;
       case 'check':
       case 'verify': result = await withReference(inputs[0], context, r => verifyRecorded(r.path, { ...context, expected: r.expected })); break;
       case 'inspect': result = await withReference(inputs[0], context, async r => {
@@ -292,7 +298,7 @@ export async function main(args: string[]): Promise<number> {
     else if (events) emit('result', { command, result });
     else terminal.result(command, result, command === 'cache' ? inputs[0] : undefined);
     for (const warning of (result.warnings ?? []) as string[]) console.error(`vestry: ${warning}`);
-    return command === 'scan' ? result.exitCode as number : 0;
+    return ['scan', 'survey'].includes(command) ? result.exitCode as number : 0;
   } catch (error) {
     terminal.stopActivity();
     const failure = diagnostic(controller.signal.aborted ? controller.signal.reason : error);

@@ -20,11 +20,26 @@ export function formatBytes(value: unknown): string {
   const power = n ? Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1) : 0;
   return `${(n / 1024 ** power).toLocaleString('en-US', { maximumFractionDigits: power ? 1 : 0 })} ${units[power]}`;
 }
+const year = (iso: unknown) => iso ? String(new Date(String(iso)).getFullYear()) : undefined;
+/** The years a record type covers, like 2009–2023, or the year a snapshot is as of. */
+function years(part: Result): string {
+  const [from, to] = [year(part.earliest), year(part.latest)];
+  if (from && to) return from === to ? from : `${from}–${to}`;
+  return part.asOf ? `as of ${year(part.asOf)}` : '';
+}
+function measure(m: Result): string {
+  const hours = Number(m.value) / 3600;
+  const value = m.unit === 'bytes' ? formatBytes(m.value) : m.unit === 'seconds' ? (hours >= 1 ? `${Math.round(hours).toLocaleString('en-US')} hours` : `${Math.round(Number(m.value) / 60)} minutes`) : Number(m.value).toLocaleString('en-US');
+  return `${clean(m.label)}: ${value}`;
+}
+/** Where an export starts in the payload, the same for every copy and form. */
+const exportRoot = (root: unknown) => `data/${clean(root)}`;
 const descriptions: Record<string, string> = {
   eject: 'Restore payload files to the package folder, retaining the original package for recovery.',
   edit: 'Update catalog title, description, or notes without changing package bytes.',
   show: 'Show a package description and all known copies; does not check integrity.',
   check: 'Read the selected copy and verify its integrity.',
+  survey: 'Count the records in each export a package holds, using Chronicle. Package bytes are not changed.',
   cp: 'Copy to a new package path, verify the copy, and keep the original.',
   mv: 'Relocate a package; retain the original in a recovery folder until explicit cleanup.',
   cleanup: 'Recheck a moved package and remove its retained original. Frees source disk space.',
@@ -112,6 +127,22 @@ export class Terminal {
     const bad = ['changed', 'failed', 'unavailable'].includes(String(value));
     return this.style(readable(value), good ? '32' : bad ? '31' : '33');
   }
+  /** Each export's record types, with their counts and years, or why it was not counted. */
+  private surveys(readers: Result[]): string {
+    let out = '';
+    for (const reader of readers) {
+      out += `\n  ${this.style(clean(reader.source), '1')}  ${exportRoot(reader.root)}${reader.pluginVersion ? this.style(`  plugin ${clean(reader.pluginVersion)}`, '2') : ''}\n`;
+      if (reader.outcome !== 'counted') { out += `    ${this.availability(reader.outcome)}  ${this.wrap(reader.reason, 4)}\n`; continue; }
+      const kinds = Object.entries(reader.survey as Record<string, Result>);
+      const labels = kinds.map(([kind, part]) => clean(part.label ?? readable(kind))), counts = kinds.map(([, part]) => Number(part.count).toLocaleString('en-US'));
+      const width = Math.max(...labels.map(l => l.length)), digits = Math.max(...counts.map(c => c.length));
+      for (const [index, [, part]] of kinds.entries()) {
+        const extra = [years(part), ...(part.measures ?? []).map(measure)].filter(Boolean).join(' · ');
+        out += `    ${labels[index].padEnd(width)}  ${counts[index].padStart(digits)}${extra ? `  ${this.style(extra, '2')}` : ''}\n`;
+      }
+    }
+    return out;
+  }
   start(command: string, ref?: string, mode?: string) {
     this.started = Date.now();
     console.error(`\n${this.heading(`VESTRY  /  ${command}`, '36', true)}`);
@@ -153,11 +184,12 @@ export class Terminal {
       if (command === 'recover') out += '\n  No ID: list pending work. With ID: resume verified staging.\n  --discard discards owned incomplete staging.\n  --release-lock / --release-registry-lock check a dead owner before unlocking.\n';
       if (command === 'register') out += '\n  --as NAME adds an alias. --main makes this the main archive location.\n';
       if (command === 'scan') out += '\n  Recursively checks candidates containing bagit.txt; never descends into payloads.\n  Existing main locations are retained. --make-main adopts unique discovered copies.\n  Duplicate copies require an explicit choice with register PATH --main.\n  Symlinks, drafts, Vestry storage, and recovery staging are skipped.\n  Exit 1 means some candidates failed or a main location was ambiguous.\n';
+      if (command === 'survey') out += '\n  Chronicle finds each export in the package and the source that reads it.\n  Vestry keeps these readers by Content ID, so they serve every copy and form.\n  --find looks again, as after updating Chronicle or its plugins.\n  --check verifies the copy first; otherwise the survey records the identity as expected.\n  Each survey is kept in Vestry records; show prints the latest.\n  Requires the chronicle command: npm install -g @chronicle.app/cli\n  Exit 1 means Chronicle could not count some exports.\n';
       if (command === 'describe') out += '\n  --edit opens $VISUAL or $EDITOR. --readme FILE imports notes.\n  --description TEXT sets the short description.\n';
     } else {
       out += '\n  Preserve files. Know where they live. Verify them anytime.\n';
       const groups = [
-        ['Everyday commands', ['create', 'list', 'show', 'edit', 'check', 'scan', 'pack', 'unpack', 'cp', 'mv', 'eject', 'forget']],
+        ['Everyday commands', ['create', 'list', 'show', 'edit', 'check', 'survey', 'scan', 'pack', 'unpack', 'cp', 'mv', 'eject', 'forget']],
       ] as const;
       for (const [title, commands] of groups) {
         out += `\n${this.heading(title)}\n`;
@@ -214,6 +246,16 @@ export class Terminal {
         for (const skip of result.skipped) out += this.row('Path', skip.path) + this.row('Reason', skip.reason);
       }
       if (result.summary.possibleMoves || result.issues.some((i: Result) => i.code === 'AMBIGUOUS_MAIN_LOCATION')) out += '\n  Choose a specific main copy: vestry register PATH --main\n';
+    } else if (command === 'survey') {
+      const counted = result.readers.filter((r: Result) => r.outcome === 'counted').length;
+      const title = result.readers.length ? `SURVEY  /  ${counted} of ${result.readers.length} exports counted` : 'SURVEY  /  no exports recognized';
+      out += `${this.heading(title, result.exitCode ? '33' : '32')}\n\n`;
+      out += this.row('Location', result.path) + this.row('Format', result.representation === 'packed' ? 'Packed · data.zip' : 'Expanded · data/');
+      out += this.row('Identity', result.identityConfidence === 'verified' ? 'Verified before counting' : `Expected from records; last checked ${clean(result.lastVerifiedAt ?? 'never')}`);
+      out += this.row('Chronicle', result.chronicle) + this.row('Readers', result.foundReaders ? 'Found by Chronicle for this survey' : 'Kept from an earlier survey · --find looks again');
+      out += this.surveys(result.readers);
+      if (!result.readers.length) out += '\n  Chronicle did not recognize an export in this package.\n  See what it reads: chronicle sources --all\n';
+      out += '\n' + this.row('Survey', result.surveyId);
     } else if (Array.isArray(result.packages)) {
       out += `${this.heading(`PACKAGES  /  ${result.packages.length}`)}\n`;
       if (!result.packages.length) out += '\n  Nothing registered yet.\n  Start with: vestry create ./folder --description "What this contains"\n';
@@ -264,6 +306,11 @@ export class Terminal {
       }
       if (result.metadata) out += `\n${this.heading('Vestry metadata (editable)')}\n` + this.row('Title', result.metadata.title) + this.row('Description', result.metadata.description) + this.row('Notes', result.metadata.notes);
       if (new Set((result.metadataVariants ?? []).map((v: Result) => JSON.stringify([v.metadata?.title, v.metadata?.description, v.metadata?.notes]))).size > 1) out += '\n  Copies have differing catalog metadata; inspect --json for all recorded values.\n';
+      if (result.readers?.length) {
+        out += `\n${this.heading('Readers (Chronicle)')}\n`;
+        for (const reader of result.readers) out += this.row(reader.source, `${exportRoot(reader.root)} · ${readable(reader.strategy)}${reader.status === 'ready' ? '' : ` · ${readable(reader.status)}`}`);
+      }
+      if (result.lastSurvey) out += `\n${this.heading('Last survey')}  ${this.style(clean(result.lastSurvey.endedAt), '2')}\n` + this.surveys(result.lastSurvey.readers);
       if (result.sealedReadme) out += `\n${this.heading('Sealed description (in package)')}\n  ${this.wrap(String(result.sealedReadme).trimEnd(), 2)}\n`;
       if (result.readme) out += `\n${this.heading('Description')}\n  ${this.wrap(String(result.readme).trimEnd(), 2)}\n`;
       if (result.message) out += `\n  ${this.wrap(result.message, 2)}\n`;

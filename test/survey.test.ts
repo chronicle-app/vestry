@@ -1,0 +1,96 @@
+import { afterEach, beforeEach, expect, it } from 'vitest';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
+import { canonical } from '../src/fs-util.js';
+import { createPackage, convertInPlace } from '../src/locations.js';
+import { verify } from '../src/package.js';
+import type { Context } from '../src/operations.js';
+
+// A stand-in for the chronicle command: it logs each call and answers as
+// Chronicle's JSON does, finding one export it reads, one it can't, and one
+// above the payload, which Vestry must not keep.
+const fake = `#!/usr/bin/env node
+const { appendFileSync } = require('node:fs');
+const { dirname } = require('node:path');
+const args = process.argv.slice(2), value = flag => args[args.indexOf(flag) + 1];
+appendFileSync(process.env.FAKE_CHRONICLE_LOG, JSON.stringify(args) + '\\n');
+if (args[0] === '--version') console.log('@chronicle.app/cli/9.9.9 test');
+else if (args[0] === 'scan') console.log(JSON.stringify([
+  { source: 'notes', strategy: 'archive', plugin: 'notes', status: 'ready', installed: true, pluginVersion: '1.2.3', root: args[1] + '/export', config: { input: args[1] + '/export', account: 'me' }, evidence: { files: ['notes.json'] } },
+  { source: 'old-notes', strategy: 'archive', plugin: 'old-notes', status: 'unsupported', installed: true, root: args[1] + '/old', config: { input: args[1] + '/old' } },
+  { source: 'elsewhere', strategy: 'archive', plugin: 'elsewhere', status: 'ready', installed: true, root: dirname(dirname(args[1])), config: {} },
+]));
+else if (process.env.FAKE_CHRONICLE_FAIL) {
+  console.error(JSON.stringify({ level: 'error', message: 'Nothing at ' + value('--input'), hint: { action: 'Run \`chronicle survey notes --help\` to see what it reads.' } }));
+  process.exit(2);
+} else console.log(JSON.stringify([{ source: args[1], strategy: value('--strategy'), status: 'ready', pluginVersion: '1.2.3',
+  survey: { notes: { count: 3, earliest: '2019-05-01T00:00:00.000Z', latest: '2023-02-01T00:00:00.000Z', measures: [{ key: 'folders', label: 'folders', value: 2 }] } } }]));
+`;
+let root: string, source: string, bin: string, log: string, context: Context;
+beforeEach(async () => {
+  root = await canonical(await mkdtemp(join(tmpdir(), 'vestry-survey-')));
+  source = join(root, 'source'); bin = join(root, 'bin'); log = join(root, 'chronicle.log'); context = { home: join(root, 'records') };
+  await mkdir(join(source, 'export'), { recursive: true }); await mkdir(join(source, 'old')); await mkdir(bin);
+  await writeFile(join(source, 'export', 'notes.json'), '[]'); await writeFile(join(source, 'old', 'notes.xml'), '<notes/>');
+  await writeFile(join(bin, 'chronicle'), fake); await chmod(join(bin, 'chronicle'), 0o755); await writeFile(log, '');
+});
+afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+const cli = (args: string[], env: Record<string, string> = {}) => {
+  const child = spawnSync(process.execPath, ['bin/vestry.js', ...args, '--home', context.home!, '--json'], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, FAKE_CHRONICLE_LOG: log, ...env } });
+  return { ...child, result: JSON.parse(child.stdout) };
+};
+const calls = async () => (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as string[]);
+
+it('surveys each export Chronicle finds, keeps its readers by content, and leaves package bytes unchanged', async () => {
+  await createPackage(source, context);
+  const before = await verify(source);
+  const first = cli(['survey', source]);
+  expect(first.status, first.stdout).toBe(0);
+  expect(first.result).toMatchObject({ command: 'survey', contentId: before.payloadDigest, representation: 'expanded', identityConfidence: 'expected', chronicle: '9.9.9', foundReaders: true, exitCode: 0 });
+  expect(first.result.readers).toEqual([
+    { source: 'notes', strategy: 'archive', root: 'export', pluginVersion: '1.2.3', outcome: 'counted', survey: expect.objectContaining({ notes: expect.objectContaining({ count: 3 }) }) },
+    { source: 'old-notes', strategy: 'archive', root: 'old', outcome: 'skipped', reason: expect.stringContaining('cannot read it yet') },
+  ]);
+  const surveyed = (await calls()).find(args => args[0] === 'survey')!;
+  expect(surveyed).toEqual(expect.arrayContaining(['notes', '--strategy', 'archive', '--input', join(source, 'data', 'export'), '--account', 'me']));
+  expect((await calls()).find(args => args[0] === 'scan')![1]).toBe(join(source, 'data'));
+
+  const again = cli(['survey', source]);
+  expect(again.result.foundReaders).toBe(false);
+  expect((await calls()).filter(args => args[0] === 'scan')).toHaveLength(1);
+  expect(await readdir(join(context.home!, 'surveys'))).toHaveLength(2);
+  const shown = cli(['show', source]).result;
+  expect(shown.readers.map((r: { source: string }) => r.source)).toEqual(['notes', 'old-notes']);
+  expect(shown.lastSurvey).toMatchObject({ id: again.result.surveyId, readers: [{ outcome: 'counted' }, { outcome: 'skipped' }] });
+  expect(await verify(source)).toEqual(before);
+  expect(cli(['check', source]).status).toBe(0);
+});
+
+it('reads a packed copy through data.zip with the readers another form found, after --check', async () => {
+  await createPackage(source, context);
+  expect(cli(['survey', source]).status).toBe(0);
+  await convertInPlace(source, 'packed', context);
+  const packed = cli(['survey', source, '--check']);
+  expect(packed.status, packed.stdout).toBe(0);
+  expect(packed.result).toMatchObject({ representation: 'packed', identityConfidence: 'verified', foundReaders: false });
+  expect((await calls()).filter(args => args[0] === 'survey').at(-1)).toContain(join(source, 'data.zip', 'export'));
+  const found = cli(['survey', source, '--find']);
+  expect(found.result.foundReaders).toBe(true);
+  expect((await calls()).filter(args => args[0] === 'scan').at(-1)![1]).toBe(join(source, 'data.zip'));
+});
+
+it('says when Chronicle is missing, and records what it could not count', async () => {
+  await createPackage(source, context);
+  const missing = spawnSync(process.execPath, ['bin/vestry.js', 'survey', source, '--home', context.home!, '--json'], { encoding: 'utf8', env: { ...process.env, PATH: join(root, 'empty') } });
+  expect(missing.status).toBe(4);
+  expect(JSON.parse(missing.stdout).error).toMatchObject({ code: 'CHRONICLE_UNAVAILABLE', message: expect.stringContaining('npm install -g @chronicle.app/cli') });
+  const failing = cli(['survey', source], { FAKE_CHRONICLE_FAIL: '1' });
+  expect(failing.status).toBe(1);
+  expect(failing.result.readers[0]).toMatchObject({ source: 'notes', outcome: 'failed', reason: expect.stringMatching(/^Nothing at .*chronicle survey notes --help/) });
+  expect(await readdir(join(context.home!, 'surveys'))).toHaveLength(1);
+  const unregistered = join(root, 'unregistered'); await mkdir(unregistered);
+  await createPackage(unregistered, { home: join(root, 'other-records') });
+  expect(cli(['survey', unregistered]).status).toBe(2);
+});

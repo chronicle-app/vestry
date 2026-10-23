@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `survey` counts the records in each export a package holds, using Chronicle's `chronicle` command, and keeps the readers it finds and each dated survey in the catalog
+- `show` lists a package's readers and its latest survey
+
 ## 0.1.0
 
 First public release.
