@@ -138,7 +138,7 @@ it('recovers after recovery itself is killed using explicit dead-owner lock rele
   const worker = fileURLToPath(new URL('../dist/test/helpers/recover-worker.js', import.meta.url));
   const child = spawnSync(process.execPath, [worker, op.id, context.home!], { encoding: 'utf8' });
   expect(child.signal, child.stderr).toBe('SIGKILL');
-  await expect(recover(op.id, checkOutput, context)).rejects.toThrow('locked');
+  await expect(recover(op.id, checkOutput, context)).rejects.toMatchObject({ hint: expect.stringContaining(`vestry recover ${op.id} --release-lock`) });
   await recover(op.id, checkOutput, context, false, true);
   await recover(op.id, checkOutput, context);
   expect((await verify(destination)).status).toBe('verified');

@@ -13,7 +13,7 @@ afterEach(async () => { await rm(cwd, { recursive: true, force: true }); });
 const run = (...args: string[]) => JSON.parse(execFileSync(process.execPath, [bin, ...args, '--json', '--quiet', '--home', join(cwd, 'home')], { cwd, encoding: 'utf8' }));
 
 it('supports help from an unrelated working directory', () => {
-  expect(execFileSync(process.execPath, [bin, '--help'], { cwd, encoding: 'utf8' })).toContain('vestry cp PACKAGE DESTINATION');
+  expect(execFileSync(process.execPath, [bin, '--help'], { cwd, encoding: 'utf8' })).toContain('cp PACKAGE DESTINATION');
 });
 
 it('rejects wrong package paths before Finder cleanup or a recovery record', async () => {

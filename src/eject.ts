@@ -17,19 +17,19 @@ export async function checkEjected(path: string): Promise<Checked> {
 }
 export async function ejectPackage(ref: string, context: Context & { keepZip?: boolean; offline?: boolean } = {}): Promise<Record<string, unknown>> {
   const selected = await packageReference(ref, context);
-  if (selected.storage !== 'external') throw usage('Eject requires an external package copy, not a managed cache copy.');
-  if (within(await canonical(process.cwd()), selected.path)) throw usage('Run eject from outside the package folder.');
+  if (selected.storage !== 'external') throw usage('A cached copy can\'t be ejected', 'Pass the path of a copy in your archive.');
+  if (within(await canonical(process.cwd()), selected.path)) throw usage('Can\'t eject the folder you\'re in', 'Run it from outside the package, such as its parent.');
   for (const op of await listOperations(context)) if ([op.source, op.destination].includes(selected.path)) await retireAbandoned(op.id, context);
   const pending = (await listOperations(context)).find(op => op.kind !== 'verify' && !['succeeded', 'discarded'].includes(op.status) && [op.source, op.destination].includes(selected.path));
-  if (pending) throw conflict(`An unfinished operation involves this path. Run vestry recover ${pending.id} with the same --home.`);
+  if (pending) throw conflict('An unfinished operation involves this path', `Run \`vestry recover ${pending.id}\` to finish it.`);
   return withReference(selected.path, context, async source => {
     const verified = await verifyRecorded(source.path, { ...context, expected: source.expected });
     const id = verified.packageDigest as string;
-    if (context.keepZip && verified.representation !== 'packed') throw usage('--keep-zip requires a packed package; expanded eject already preserves nested ZIP originals.');
+    if (context.keepZip && verified.representation !== 'packed') throw usage('--keep-zip works only with a packed package', 'An expanded package already keeps the ZIPs inside it as they are.');
     const record = (await readRegistry(context)).packages[id];
     const importRecord = (await listOperations(context)).find(op => op.expected === id && op.status === 'succeeded' && (op.zipEntry || op.kind === 'import-zip'));
     const zipName = record.originalZipName ?? importRecord?.zipEntry ?? (importRecord?.kind === 'import-zip' ? basename(importRecord.source) : 'payload.zip');
-    if (!/^[^/\\]+\.zip$/i.test(zipName)) throw conflict('Invalid recorded original ZIP filename.');
+    if (!/^[^/\\]+\.zip$/i.test(zipName)) throw conflict('Invalid recorded original ZIP filename');
     return withCacheMutation(id, source.lease, context, async () => {
       let expected: string;
       if (context.keepZip) expected = digest('code', [{ ...await hashFile(join(source.path, 'data.zip'), zipName), path: zipName }]);
@@ -54,7 +54,7 @@ export async function ejectPackage(ref: string, context: Context & { keepZip?: b
       }, async stage => {
         const files = await walk(stage);
         const actual = context.keepZip ? digest('code', files) : digest('payload', matchPayload(await readFile(join(source.path, 'manifest-sha256.txt'), 'utf8'), files.map(f => ({ ...f, path: 'data/' + f.path }))));
-        if (actual !== expected) throw integrity('Restored data differs from the package payload; original retained.');
+        if (actual !== expected) throw integrity('The restored files don\'t match the package', 'The package is kept as it was.');
         const checked = await checkEjected(stage);
         return { ...checked, result: { ...checked.result, contentId: verified.payloadDigest, payloadDigest: verified.payloadDigest } };
       }, { ...context, ejectPackageDigest: id });

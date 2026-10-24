@@ -1,357 +1,463 @@
+import { createLogger, type Logger, type Sink } from '@chronicle.app/logging';
 import type { Operation, Phase } from './operations.js';
+import packageInfo from '../package.json' with { type: 'json' };
+import { COMMANDS, EVERYDAY, GLOBAL_FLAGS, MORE, type Flag } from './help.js';
+import {
+  bytes, card, clean, colorEnabled, createSink, count, date, day, definitions, glyphs, heading, hint, line, paragraph, pathArg, plural, relativePath, summary, table, tilde, tildes, tokens,
+  type ColorMode, type ProgressFields, type Segment, type Status, type Style, type Tokens,
+} from './output/index.js';
 
-export type ColorMode = 'auto' | 'always' | 'never';
+export { colorEnabled, type ColorMode } from './output/index.js';
+
 type Result = Record<string, any>;
-const clean = (value: unknown) => String(value ?? '').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, c => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
-const quote = (value: unknown) => `'${String(value).replaceAll("'", "'\\''")}'`;
+
 const shortId = (id: unknown) => String(id ?? '').split(':').at(-1)!.slice(0, 12);
 const readable = (value: unknown) => clean(value).replaceAll('-', ' ');
+/** A path as a person reads it, safe to print. */
+const where = (path: unknown) => tilde(clean(path));
+/** A path in a line about what's happening: from here, when it's below here. */
+const here = (path: unknown) => relativePath(clean(path));
+/** When something happened, in local time to the minute. */
+const when = (iso: unknown) => iso ? date(new Date(String(iso))) : 'never';
+/** Where an export starts in the payload, the same for every copy and form. */
+const exportRoot = (root: unknown) => `data/${clean(root)}`;
+const format = (representation: unknown) => representation === 'packed' ? 'packed (data.zip)' : representation === 'expanded' ? 'expanded (data/)' : undefined;
+const contents = (result: Result) => result.payloadFiles === undefined ? undefined
+  : `${count(Number(result.payloadFiles))} ${plural('files', Number(result.payloadFiles))}, ${bytes(result.payloadBytes)}`;
+/** What a package is called: its aliases, or the start of its Content ID. */
+const named = (result: Result) => clean(result.aliases?.join(', ') || shortId(result.contentId ?? result.payloadDigest ?? result.packageDigest));
+/** Paths padded to a column, unless one is so long the rest would trail off after it. */
+const column = (texts: string[]) => {
+  const widest = Math.max(0, ...texts.map(text => text.length));
+  return texts.map(text => widest <= 60 ? text.padEnd(widest) : text);
+};
 
-export function colorEnabled(mode: ColorMode, tty: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (mode !== 'auto') return mode === 'always';
-  if (env.NO_COLOR !== undefined) return false;
-  if (env.FORCE_COLOR !== undefined) return env.FORCE_COLOR !== '0';
-  return tty && env.TERM !== 'dumb';
-}
-export function formatBytes(value: unknown): string {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0) return clean(value);
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
-  const power = n ? Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1) : 0;
-  return `${(n / 1024 ** power).toLocaleString('en-US', { maximumFractionDigits: power ? 1 : 0 })} ${units[power]}`;
-}
-/** A local date, like 2026-07-15, or - for none. */
-function day(iso: unknown): string {
-  if (!iso) return '-';
-  const date = new Date(String(iso));
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
+/** A local date for a survey cell, like 2026-07-15, or - for none. */
+const dayOf = (iso: unknown) => iso ? day(new Date(String(iso))) : '-';
 /** A measure as one word, like conversations=482 or calls=12h. */
 function measure(m: Result): string {
   const value = Number(m.value), hours = value / 3600;
-  const shown = m.unit === 'bytes' ? formatBytes(value).replace(' ', '') : m.unit === 'seconds' ? (hours >= 1 ? `${Math.round(hours)}h` : `${Math.round(value / 60)}m`) : String(value);
+  const shown = m.unit === 'bytes' ? bytes(value).replace(' ', '') : m.unit === 'seconds' ? (hours >= 1 ? `${Math.round(hours)}h` : `${Math.round(value / 60)}m`) : String(value);
   return `${clean(m.label ?? m.key).replaceAll(' ', '-')}=${shown}`;
 }
-/** Where an export starts in the payload, the same for every copy and form. */
-const exportRoot = (root: unknown) => `data/${clean(root)}`;
-const descriptions: Record<string, string> = {
-  eject: 'Restore payload files to the package folder, retaining the original package for recovery.',
-  edit: 'Update catalog title, description, or notes without changing package bytes.',
-  show: 'Show a package description and all known copies; does not check integrity.',
-  check: 'Read the selected copy and verify its integrity.',
-  survey: 'Count the records in each export a package holds, using Chronicle. Package bytes are not changed.',
-  cp: 'Copy to a new package path, verify the copy, and keep the original.',
-  mv: 'Relocate a package; retain the original in a recovery folder until explicit cleanup.',
-  cleanup: 'Recheck a moved package and remove its retained original. Frees source disk space.',
-  create: 'Create a package from a folder in place, or turn an existing ZIP into a packed package.',
-  list: 'Show packages and counts of available and missing copies.',
-  scan: 'Find and verify packages in a directory tree, then register their locations.',
-  inspect: 'Verify the selected copy and show its description, identity, and locations.',
-  verify: 'Read and checksum every payload file and tag. Reports full verification.',
-  pack: 'Replace data/ with data.zip at the same package location. Identity stays unchanged.',
-  unpack: 'Replace data.zip with data/ at the same package location. Identity stays unchanged.',
-  move: 'Compatibility spelling of mv PACKAGE DESTINATION (with --to DESTINATION).',
-  register: 'Verify an existing package and remember its location. Optionally add an alias.',
-  forget: 'Remove registration and all aliases. Files, managed copies, and history are retained.',
-  locate: 'Show known locations and availability. This does not reverify package contents.',
-  history: 'Show recorded operations, including failures and interruptions.',
-  recover: 'List unfinished operations, or resume a specific operation from verified staging.',
-  cache: 'Keep verified local copies available while your archive is offline.',
-  gather: 'Copy original files into a new editable draft. Originals stay untouched.',
-  describe: 'Edit a draft description or README before sealing it.',
-  seal: 'Reserved for future metadata snapshots. For drafts, use create DRAFT --from-draft --output DIR.',
-};
 
+/** How a copy's availability looks: its glyph, and a word for anything but available. */
+function availability(value: unknown, t: Tokens): [Segment, ...Segment[]] {
+  if (value === 'available') return [[glyphs.success, t.success]];
+  if (['unavailable', 'changed', 'failed'].includes(String(value))) return [[glyphs.failure, t.danger], [`  ${readable(value)}`, t.danger]];
+  if (value === 'not-checked-offline') return [[glyphs.bullet, t.muted], ['  not checked offline', t.muted]];
+  return [[glyphs.warning, t.warning], [`  ${readable(value)}`, t.warning]];
+}
+
+/** An operation's status as a glyph: done, failed, unfinished, or dropped. */
+function operationStatus(status: unknown, t: Tokens): Segment {
+  if (status === 'succeeded') return [glyphs.success, t.success];
+  if (status === 'failed') return [glyphs.failure, t.danger];
+  if (status === 'discarded') return [glyphs.bullet, t.muted];
+  return [glyphs.warning, t.warning];
+}
+
+/** What a result that reports something done is titled. */
+function title(command: string, result: Result, subcommand?: string): string {
+  if (command === 'recover') return result.status === 'lock-released' ? 'Lock released' : result.status === 'discarded' ? 'Operation discarded' : result.status === 'interrupted' ? 'Operation still unfinished' : 'Operation recovered';
+  if (command === 'cache') return subcommand === 'evict' ? 'Cached copy evicted' : subcommand === 'unpin' ? 'Copy unpinned' : result.pinned ? 'Offline copy pinned' : 'Local copy ready';
+  const titles: Record<string, string> = {
+    eject: 'Package ejected', edit: 'Catalog updated', check: 'Integrity verified', verify: 'Integrity verified', inspect: 'Integrity verified',
+    cp: 'Package copied', mv: 'Package moved', move: 'Package moved', cleanup: 'Recovery copy removed', create: 'Package created', seal: 'Package sealed',
+    pack: 'Package packed', unpack: 'Package unpacked', register: 'Package registered', forget: 'Package forgotten', gather: 'Draft created', describe: 'Description updated',
+  };
+  return titles[command] ?? 'Done';
+}
+
+/** What an operation is about to do, for the log. */
+function planned(op: Operation): string | undefined {
+  const [from, to] = [here(op.source), here(op.destination)];
+  const inPlace = op.inPlace || op.destination === op.source;
+  switch (op.kind) {
+    case 'create': return inPlace ? `Packaging ${from} in place` : `Packaging ${from} as ${to}`;
+    case 'import-zip': return `Packaging ${from} as ${to}`;
+    case 'seal': return `Packaging the draft ${from} as ${to}`;
+    case 'copy': return `Copying ${from} to ${to}`;
+    case 'move': return `Moving ${from} to ${to}`;
+    case 'pack': return inPlace ? `Packing ${from} in place` : `Packing ${from} into ${to}`;
+    case 'unpack': return inPlace ? `Unpacking ${from} in place` : `Unpacking ${from} into ${to}`;
+    case 'eject': return `Ejecting ${from}`;
+    case 'cache-copy': return `Copying ${from} to the cache`;
+    case 'gather': return `Gathering files into ${to}`;
+    default: return undefined;
+  }
+}
+
+/** How each flag is typed, the long forms lined up when any flag has a short one: `-q, --quiet`, `    --home DIR`. */
+function flagTerms(flags: Flag[], t: Tokens) {
+  const pad = flags.some(([name]) => name.includes(', '));
+  return flags.map(([name, value, text]) => ({
+    term: [[`${pad && !name.includes(', ') ? '    ' : ''}${name}`, t.command], ...(value ? [[` ${value}`, t.muted]] : [])] as Segment[],
+    text,
+  }));
+}
+
+export interface Failure { code: string; message: string; exitCode: number; details: Result; hint?: string }
+
+/**
+ * How vestry talks to a person: results on stdout, and everything else as
+ * `@chronicle.app/logging` events, rendered on stderr by a pretty or plain sink.
+ */
 export class Terminal {
+  /** The `--home` a person passed: added to the vestry commands in hints, so they run as printed. */
+  home?: string;
+  quiet = false;
   private started = Date.now();
   private seen = new Set<string>();
-  private ticker?: ReturnType<typeof setInterval>;
-  private activityText = 'Preparing; checking source and destination…';
-  private activityBytes?: string;
-  private activityTotal?: string;
-  private frame = 0;
-  private lastLog = 0;
-  private clearActivity() {
-    if (this.ticker && process.stderr.isTTY) process.stderr.write('\r\x1b[2K');
-  }
-  activity(message: string, bytes?: string, total?: string) {
-    this.activityText = clean(message).replace(/[\r\n\t]/g, ' ');
-    this.activityBytes = bytes; this.activityTotal = total;
-  }
-  private renderActivity() {
-    const elapsed = Math.floor((Date.now() - this.started) / 1000);
-    const timing = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')} elapsed`;
-    const amounts = this.activityBytes === undefined ? '' : ` · ${formatBytes(this.activityBytes)} / ${formatBytes(this.activityTotal)}`;
-    const suffix = amounts + ` · ${timing}`;
-    if (process.stderr.isTTY) {
-      const width = Math.max(20, (process.stderr.columns || 100) - 5 - suffix.length);
-      const label = this.activityText.length > width ? '…' + this.activityText.slice(-Math.max(1, width - 1)) : this.activityText;
-      process.stderr.write(`\r\x1b[2K  ${['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][this.frame++ % 10]} ${label}${suffix}`);
-    } else if (!this.lastLog || Date.now() - this.lastLog >= 10000) {
-      console.error(`  › ${this.activityText}${suffix}`); this.lastLog = Date.now();
-    }
-  }
-  stopActivity() {
-    this.clearActivity();
-    if (this.ticker) clearInterval(this.ticker);
-    this.ticker = undefined;
-  }
+  private output?: { sink: Sink; logger: Logger };
+  private progress?: ProgressFields;
+
   constructor(public mode: ColorMode = 'auto') {}
-  private style(text: string, code: string, error = false): string {
-    return colorEnabled(this.mode, !!(error ? process.stderr.isTTY : process.stdout.isTTY)) ? `\x1b[${code}m${text}\x1b[0m` : text;
+
+  /** Take the flags that shape output, once they're parsed. */
+  configure({ mode, quiet, home }: { mode: ColorMode; quiet?: boolean; home?: string }) {
+    this.output?.sink.flush?.();
+    this.output = undefined;
+    Object.assign(this, { mode, quiet: !!quiet, home });
   }
-  private heading(text: string, tone = '36', error = false): string { return this.style(clean(text), `1;${tone}`, error); }
-  private width() { return Math.max(36, Math.min(process.stdout.columns || 100, 110)); }
-  private wrap(value: unknown, indent: number): string {
-    const width = this.width() - indent;
-    return clean(value).split('\n').flatMap(line => {
-      const lines: string[] = [];
-      while (line.length > width) {
-        let cut = line.lastIndexOf(' ', width);
-        if (cut < width / 2) { lines.push(line); return lines; }
-        lines.push(line.slice(0, cut)); line = line.slice(cut).replace(/^ +/, '');
-      }
-      return [...lines, line];
-    }).join('\n' + ' '.repeat(indent));
+
+  /**
+   * Where a person's messages go: a pretty sink at a terminal, plain lines
+   * otherwise. `--quiet` keeps warnings and errors.
+   */
+  private get log(): Logger {
+    if (!this.output) {
+      const sink = createSink({ pretty: !!process.stderr.isTTY, t: tokens(colorEnabled(this.mode, !!process.stderr.isTTY)), level: this.quiet ? 'warn' : 'info' });
+      this.output = { sink, logger: createLogger({ scope: 'cli', sink }) };
+    }
+    return this.output.logger;
   }
-  private row(label: string, value: unknown): string {
-    if (value === undefined || value === null || value === '') return '';
-    return `  ${this.style(label.padEnd(12), '2')} ${this.wrap(value, 15)}\n`;
+  /** Colors for a result on stdout. */
+  private get t(): Tokens { return tokens(colorEnabled(this.mode, !!process.stdout.isTTY)); }
+  /** Columns a result fits: the terminal's, or unbounded when piped, so nothing is cut. */
+  private get width(): number { return process.stdout.isTTY ? (process.stdout.columns || 80) - 1 : Number.POSITIVE_INFINITY; }
+  private print(lines: string[]) { if (lines.length) process.stdout.write(`${lines.join('\n')}\n`); }
+
+  /**
+   * A hint's text made safe to print, since its paths and Chronicle's hints
+   * come from outside, and with `--home` added to each vestry command in it,
+   * so the command finds the same catalog.
+   */
+  private next(text: string): string {
+    text = clean(text);
+    if (!this.home) return text;
+    return text.replaceAll(/`(vestry [^`]*)`/g, (span, command: string) => /--home|--help/.test(command) ? span : `\`${command} --home ${pathArg(this.home!)}\``);
   }
-  private contents(result: Result): string {
-    if (result.payloadFiles === undefined || result.payloadBytes === undefined) return this.row('Contents', 'Not recorded yet · run vestry check PACKAGE');
-    return this.row('Files', Number(result.payloadFiles).toLocaleString('en-US')) + this.row('Size', `${formatBytes(result.payloadBytes)} · original files (uncompressed)`);
+  private hint(text: string): string[] { return hint(this.next(text), this.t, this.width); }
+
+  /** A command under way: a live line at a terminal, a heartbeat in a log. */
+  start(title: string) {
+    this.started = Date.now();
+    this.progress = { title: clean(title).replace(/[\r\n\t]/g, ' '), elapsedMs: 0 };
+    this.log.emit({ level: 'debug', kind: 'progress', message: this.progress.title, fields: { ...this.progress } });
   }
-  private availability(value: unknown): string {
-    const good = ['available', 'succeeded', 'verified', 'known'].includes(String(value));
-    const bad = ['changed', 'failed', 'unavailable'].includes(String(value));
-    return this.style(readable(value), good ? '32' : bad ? '31' : '33');
+  activity(message: string, done?: string, total?: string) {
+    if (!this.progress) return;
+    const activity = clean(message).replace(/[\r\n\t]/g, ' ');
+    this.progress = { ...this.progress, activity, done: done === undefined ? undefined : Number(done), total: total === undefined ? undefined : Number(total), elapsedMs: Date.now() - this.started };
+    this.log.emit({ level: 'debug', kind: 'progress', message: activity, fields: { ...this.progress } });
   }
-  /** Columns as Chronicle prints them: muted headings over a rule, two spaces apart, numbers to the right. */
-  private table(headings: string[], rows: string[][], numeric: number[], indent = ''): string {
-    const widths = headings.map((heading, i) => Math.max(heading.length, ...rows.map(row => row[i].length)));
-    const line = (cells: string[]) => indent + cells.map((cell, i) => numeric.includes(i) ? cell.padStart(widths[i]) : cell.padEnd(widths[i])).join('  ').trimEnd();
-    return [this.style(line(headings), '2'), this.style(line(widths.map(w => '─'.repeat(w))), '2'), ...rows.map(line)].join('\n') + '\n';
+  /** Take the live line down and say what's held back, before the result prints. */
+  stopActivity() {
+    this.progress = undefined;
+    this.output?.sink.flush?.();
   }
+  /** A fact worth a line in the log, once. */
+  private notice(message: string) {
+    if (this.seen.has(message)) return;
+    this.seen.add(message);
+    this.log.info(message);
+  }
+  reading(path: string) { this.notice(`Checking ${here(path)}`); }
+  found(path: string, discovery: string) {
+    const at = here(path);
+    this.notice(discovery === 'new' ? `Found a new package at ${at}` : discovery === 'additional-copy' ? `Found another copy at ${at}`
+      : discovery === 'possible-move' ? `Found ${at}, and its main copy is missing` : `Found ${at}`);
+  }
+  phase(phase: Phase, op: Operation) {
+    const zip = !!op.zipAdoption, inPlace = op.inPlace || op.destination === op.source;
+    if (phase === 'planned') { const text = planned(op); if (text) this.notice(text); }
+    else if (phase === 'building') this.activity(op.kind === 'pack' ? 'Packing and checking the replacement' : op.kind === 'unpack' ? 'Expanding and checking the replacement' : op.kind === 'import-zip' ? 'Reading the ZIP' : 'Building and checking the staged copy');
+    else if (phase === 'verified') this.notice(zip ? 'ZIP entries checked and manifests written' : 'Staged copy verified');
+    else if (phase === 'relocated') this.notice(zip ? 'Original ZIP moved into staging unchanged' : op.retainOriginal ? 'Original kept in a recovery folder' : 'Original set aside until the replacement is checked');
+    else if (phase === 'published') this.notice(inPlace ? 'Replacement published' : 'Copy published');
+    else if (phase === 'cleaning') this.activity('Removing the original');
+  }
+  /** Something that went wrong but didn't stop the command. */
+  warn(message: string, next?: string) {
+    this.log.emit({ level: 'warn', kind: 'notice', message: tildes(clean(message)), ...(next && { hint: { action: this.next(next) } }) });
+  }
+
+  help(usage: string, command?: string) {
+    const t = this.t, width = Number.isFinite(this.width) ? this.width : 80;
+    const usageOf = (c: string) => usage.split('\n').filter(l => l.startsWith(`  vestry ${c} `) || l === `  vestry ${c}`).map(l => l.trim());
+    const section = (name: string, body: string[]) => body.length ? ['', heading(name, t, width), ...body] : [];
+    const global = section('Global flags', definitions(flagTerms(GLOBAL_FLAGS, t), t, width));
+    const help = command ? COMMANDS[command] : undefined;
+    if (command && help) {
+      this.print([
+        ...paragraph(help.summary, t, width),
+        ...section('Usage', usageOf(command).map(text => `  ${t.command(text)}`)),
+        ...(help.details ?? []).flatMap(text => ['', ...paragraph(text, t, width, 2)]),
+        ...section('Flags', definitions(flagTerms(help.flags ?? [], t), t, width)),
+        ...global,
+      ]);
+      return;
+    }
+    const list = (commands: string[]) => definitions(commands.map(c => ({
+      term: [[usageOf(c)[0].replace(/^vestry /, '').split(/ \[| --/)[0].replace('create DIR', 'create PATH'), t.command]] as Segment[],
+      text: COMMANDS[c].summary,
+    })), t, width);
+    this.print([
+      heading(`Vestry ${packageInfo.version}`, t, width),
+      ...paragraph('Preserve files. Know where they live. Check them anytime.', t, width),
+      ...section('Usage', [`  ${t.command('vestry <command> [flags]')}`]),
+      ...section('Commands', list(EVERYDAY)),
+      ...section('More commands', list(MORE)),
+      ...global,
+      '',
+      ...paragraph('PACKAGE is a path, an alias, or a Content ID or the start of one. A package detects damage; a second copy recovers from it. To package a draft, run `vestry create DRAFT --from-draft --output DIR`. The older names `verify`, `inspect`, `locate`, and `move` still work.', t, width),
+      '',
+      ...paragraph('Add `--help` to any command to see its flags.', t, width),
+    ]);
+  }
+
+  plan(result: Result) {
+    const t = this.t;
+    const entries = [
+      ...result.reads.map((path: string) => ['Read', where(path)]),
+      ...result.writes.map((path: string, i: number) => [i === result.writes.length - 1 ? 'Catalog' : 'Write', where(path)]),
+      ['Staging', clean(result.staging)],
+      ['Space', clean(result.scratch)],
+      ...(result.moves ?? []).map((move: Result) => ['Move', `${where(move.from)} ${glyphs.arrow} ${where(move.to)}`]),
+      ...(result.retains ? [['Keep', clean(result.retains)]] : []),
+      ['Remove', result.deletes.length ? result.deletes.map(clean).join('\n') : 'nothing'],
+      ...result.limitations.map((note: string) => ['Note', clean(note)]),
+    ] as [string, string][];
+    this.print([line([['Preview', t.strong], [`  vestry ${clean(result.command)}, nothing changed`, t.muted]], this.width), ...card(entries, t, this.width, 2)]);
+  }
+
+  /** Finder files set aside before packaging, so a package doesn't hold them. */
+  private quarantine(reports: Result[], t: Tokens): string[] {
+    return reports.flatMap(report => [
+      line([[glyphs.warning, t.warning], [' '], [`${report.copyOnly ? 'Saved' : 'Moved'} ${count(report.files.length)} Finder ${plural('files', report.files.length)} aside`, t.strong]], this.width),
+      ...card([['Folder', where(report.directory)], ...report.files.map((file: string) => ['File', where(file)] as [string, string])], t, this.width, 2),
+    ]);
+  }
+
+  /** A copy per line: whether it's there, where, and what kind. */
+  private copies(locations: Result[], main: unknown, t: Tokens, { checked = false } = {}): string[] {
+    const shown = locations.filter(location => location.state !== 'evicted' && location.availability !== 'evicted');
+    const paths = column(shown.map(location => where(location.path)));
+    const variants = new Set(shown.map(location => location.packageDigest)).size > 1;
+    return shown.map((location, i) => {
+      const [glyph, ...state] = availability(location.availability, t);
+      const labels = [location.path === main ? 'main' : '', clean(location.representation), location.storage && location.storage !== 'external' ? clean(location.storage) : '',
+        checked && location.lastVerifiedAt ? `checked ${when(location.lastVerifiedAt)}` : '', variants ? shortId(location.packageDigest) : ''].filter(Boolean);
+      return line([['  '], glyph, [' '], [paths[i]], [labels.length ? `  ${labels.join('  ')}` : '', t.muted], ...state], Number.POSITIVE_INFINITY);
+    });
+  }
+
   /**
    * A row for each record type in the exports counted, one word to a cell so
    * grep and awk can read it, and a line for each export not counted.
    */
-  private surveyTable(readers: Result[], indent = ''): { table: string; uncounted: string[] } {
+  private surveyTable(readers: Result[], t: Tokens, indent = 0): { lines: string[]; uncounted: string[] } {
     const counted = readers.filter(r => r.outcome === 'counted'), several = counted.length > 1;
-    const rows = counted.flatMap(reader => Object.entries(reader.survey as Record<string, Result>).map(([kind, part]) => [
-      clean(reader.source), ...(several ? [exportRoot(reader.root)] : []), clean(kind), String(part.count), day(part.earliest), day(part.latest),
-      [...(part.asOf ? [`as-of=${day(part.asOf)}`] : []), ...(part.measures ?? []).map(measure)].join(' '),
+    const cells = counted.flatMap(reader => Object.entries(reader.survey as Record<string, Result>).map(([kind, part]) => [
+      clean(reader.source), ...(several ? [exportRoot(reader.root)] : []), clean(kind), String(part.count), dayOf(part.earliest), dayOf(part.latest),
+      [...(part.asOf ? [`as-of=${dayOf(part.asOf)}`] : []), ...(part.measures ?? []).map(measure)].join(' '),
     ]));
-    const headings = ['source', ...(several ? ['export'] : []), 'kind', 'count', 'first', 'last', 'measures'];
-    const measured = rows.some(row => row.at(-1));
-    const table = rows.length ? this.table(measured ? headings : headings.slice(0, -1), measured ? rows : rows.map(row => row.slice(0, -1)), [headings.indexOf('count')], indent) : '';
-    return { table, uncounted: readers.filter(r => r.outcome !== 'counted').map(r => `${clean(r.source)} in ${exportRoot(r.root)}: ${clean(r.reason)}`) };
+    const measured = cells.some(row => row.at(-1));
+    const headings = ['source', ...(several ? ['export'] : []), 'kind', 'count', 'first', 'last', ...(measured ? ['measures'] : [])];
+    const { lines, hidden } = cells.length ? table({ headings, cells: measured ? cells : cells.map(row => row.slice(0, -1)), numeric: headings.map(h => h === 'count') }, t, this.width - indent) : { lines: [], hidden: [] };
+    const dropped = hidden.length ? this.hint(`The ${hidden.join(' and ')} ${plural('columns', hidden.length)} didn't fit. Widen the terminal, or use \`--json\`.`) : [];
+    return { lines: [...lines.map(text => ' '.repeat(indent) + text), ...dropped], uncounted: readers.filter(r => r.outcome !== 'counted').map(r => `${clean(r.source)} in ${exportRoot(r.root)}: ${clean(r.reason)}`) };
   }
-  /** Start timing and the activity line; with no banner, as for a command whose output is a table. */
-  start(command: string, ref?: string, mode?: string, banner = true) {
-    this.started = Date.now();
-    // Without a banner, a log hears nothing from a command that ends within 10 seconds.
-    if (!banner) this.lastLog = this.started;
-    else console.error(`\n${this.heading(`VESTRY  /  ${command}`, '36', true)}`);
-    if (banner && ref) console.error(`  Reference    ${clean(ref)}`);
-    if (banner && mode) console.error(`  Mode         ${clean(mode)}`);
-    this.ticker = setInterval(() => this.renderActivity(), 100);
-    this.ticker.unref();
-    this.renderActivity();
-  }
-  reading(path: string) { this.progress(`Checking checksums  ${path}`); }
-  found(path: string, discovery: string) { this.progress(`${readable(discovery)}  ${path}`); }
-  private progress(message: string) {
-    this.activity(message);
-    if (this.seen.has(message)) return;
-    this.seen.add(message);
-    this.clearActivity();
-    console.error(`  ${this.style('›', '36', true)} ${clean(message)}`);
-  }
-  phase(phase: Phase, op: Operation) {
-    if (phase === 'planned') {
-      this.progress(`Source  ${op.source}`);
-      if (op.destination && op.destination !== op.source) this.progress(`Destination  ${op.destination}`);
+
+  result(command: string, result: Result, subcommand?: string) {
+    if (command === 'survey') {
+      const { lines, uncounted } = this.surveyTable(result.readers, this.t);
+      this.print(lines);
+      for (const note of uncounted) this.warn(note);
+      if (!result.readers.length) this.warn('Chronicle didn\'t recognize an export in this package', 'Run `chronicle sources --all` to see what it reads.');
+      return;
     }
-    const building = op.kind === 'pack' ? 'Packing payload and checking the replacement…' : op.kind === 'unpack' ? 'Expanding payload and checking the replacement…' : op.kind === 'import-zip' ? 'Reading ZIP and preparing its package…' : 'Building and checking the staged copy…';
-    const labels: Partial<Record<Phase, string>> = { building, verified: op.zipAdoption ? 'ZIP inventory and manifests prepared; preparing publication…' : 'Staged copy verified; preparing publication…', relocated: op.zipAdoption ? 'Original ZIP moved into staging unchanged; verifying package…' : 'Original retained in a recovery backup.', published: 'Replacement published.', cleaning: 'Removing the verified old copy…' };
-    if (labels[phase]) this.progress(labels[phase]!);
+    const lines = command === 'scan' ? this.scan(result)
+      : Array.isArray(result.packages) ? this.packages(result.packages)
+      : Array.isArray(result.operations) ? this.operations(command, result.operations)
+      : Array.isArray(result.copies) ? this.cached(result.copies)
+      : this.details(command, result, subcommand);
+    if (result.quarantined?.length) lines.push('', ...this.quarantine(result.quarantined, this.t));
+    this.print(lines);
   }
-  help(help: string, command?: string) {
-    let out = `\n${this.heading(command ? `VESTRY  /  ${command}` : 'VESTRY')}\n`;
-    if (command && descriptions[command]) {
-      out += `\n  ${this.wrap(descriptions[command], 2)}\n\n${this.heading('Usage')}\n`;
-      out += help.split('\n').filter(line => line.startsWith(`  vestry ${command} `) || line === `  vestry ${command}`).join('\n') + '\n';
-      if (['pack', 'unpack'].includes(command)) out += '\n  Default: convert the selected copy in place. Run from outside the package.\n  --output DIR creates a separate copy; --location PATH selects another copy.\n  Allow space for both representations until verification finishes.\n';
-      if (['cp', 'mv', 'move'].includes(command)) out += '\n  DESTINATION is the exact new package path; it must not exist.\n  Its parent directory must exist. No automatic directory nesting.\n  mv retains a recovery copy; use cleanup OPERATION-ID to free that space.\n';
-      if (command === 'eject') out += '\n  Default: restore logical files; packed packages are extracted.\n  --keep-zip restores data.zip without extraction using its recorded name,\n  or payload.zip if unknown. Run outside the package.\n  Original package retained until cleanup OPERATION-ID.\n';
-      if (command === 'cleanup') out += '\n  Deletes only the recorded recovery copy of a completed mv or eject operation.\n  Rechecks destination identity and disk flushes first; refuses durability warnings.\n';
-      if (command === 'edit') out += '\n  --title TEXT, --description TEXT, --notes FILE update catalog records only.\n  Empty text clears a field. Back up Vestry records to preserve these notes.\n';
-      if (command === 'create') out += '\n  Retry create PATH to resume an interrupted creation.\n  --restart discards owned temporary work and rebuilds from the retained original.\n  Single-ZIP folders prompt: use ZIP contents or preserve the ZIP as one file.\n  Scripts: --zip-contents or --keep-zip. No ZIP extraction to disk is needed.\n  No description required. --description and --readme store editable catalog metadata.\n  Folder: sealed at the same path. ZIP: moved unchanged into a sibling package.\n  --output DIR copies the ZIP to another package and retains the source. --as NAME adds an alias.\n  --from-draft --output DIR packages a draft and imports its notes into the catalog.\n';
-      if (command === 'recover') out += '\n  No ID: list pending work. With ID: resume verified staging.\n  --discard discards owned incomplete staging.\n  --release-lock / --release-registry-lock check a dead owner before unlocking.\n';
-      if (command === 'register') out += '\n  --as NAME adds an alias. --main makes this the main archive location.\n';
-      if (command === 'scan') out += '\n  Recursively checks candidates containing bagit.txt; never descends into payloads.\n  Existing main locations are retained. --make-main adopts unique discovered copies.\n  Duplicate copies require an explicit choice with register PATH --main.\n  Symlinks, drafts, Vestry storage, and recovery staging are skipped.\n  With the chronicle command installed, scan also lists the exports Chronicle\n  recognizes outside any package, as folders or ZIPs to package with create.\n  Exit 1 means some candidates failed or a main location was ambiguous.\n';
-      if (command === 'survey') out += '\n  Chronicle finds each export in the package and the source that reads it.\n  Vestry keeps these readers by Content ID, so they serve every copy and form.\n  --find looks again, as after updating Chronicle or its plugins.\n  --check verifies the copy first; otherwise the survey records the identity as expected.\n  In a packed copy, ZIPs inside data.zip are copied to the Vestry cache while\n  Chronicle reads them, then removed. Allow cache space for those ZIPs.\n  Each survey is kept in Vestry records; show prints the latest.\n  Prints a row per record type: source, kind, count, first and last dates, and\n  any measures. Exports not counted are named on stderr. --json has everything.\n  Requires the chronicle command: npm install -g @chronicle.app/cli\n  Exit 1 means Chronicle could not count some exports.\n';
-      if (command === 'describe') out += '\n  --edit opens $VISUAL or $EDITOR. --readme FILE imports notes.\n  --description TEXT sets the short description.\n';
-    } else {
-      out += '\n  Preserve files. Know where they live. Verify them anytime.\n';
-      const groups = [
-        ['Everyday commands', ['create', 'list', 'show', 'edit', 'check', 'survey', 'scan', 'pack', 'unpack', 'cp', 'mv', 'eject', 'forget']],
-      ] as const;
-      for (const [title, commands] of groups) {
-        out += `\n${this.heading(title)}\n`;
-        for (const c of commands) {
-          const usage = help.split('\n').find(line => line.startsWith(`  vestry ${c} `) || line === `  vestry ${c}`)!.split(' [')[0].replace('create DIR', 'create PATH');
-          out += `${this.style(usage, '1')}\n    ${this.wrap(descriptions[c], 4)}\n`;
-        }
-      }
-      out += '\n  Advanced: cleanup, history, recover, register, cache, gather, describe.\n  Draft packaging: vestry create DRAFT --from-draft --output DIR.\n  Reserved for future revisions: seal, status, checkout, commit.\n  Compatibility: verify (check), inspect, locate, move PACKAGE --to DESTINATION.\n  A package detects damage. A separate copy helps you recover from it.\n';
-      out += '\n  vestry COMMAND --help   Options and behavior for a command\n';
+
+  /** A blank line, a title, and the lines under it; nothing when there are none. */
+  private section(name: string, body: string[], after: Segment[] = []): string[] {
+    return body.length ? ['', line([[name, this.t.strong], ...after], this.width), ...body] : [];
+  }
+
+  private scan(result: Result): string[] {
+    const t = this.t, s = result.summary, issues = result.issues as Result[];
+    // Never cut: the folder is the point of the line.
+    const out = [summary({ status: issues.length ? 'warning' : 'success', title: `Scanned ${where(result.root)}`, durationMs: Date.now() - this.started }, t, Number.POSITIVE_INFINITY)];
+    // The counts as a column, the way Chronicle sums up a run.
+    const rows: [number, string, Style?][] = [
+      [s.verified, `${plural('copies', s.verified)} checked`],
+      [s.packages, `${plural('packages', s.packages)}, ${count(s.newPackages)} new`],
+      ...(s.mainLocationsSet ? [[s.mainLocationsSet, `main ${plural('copies', s.mainLocationsSet)} set`]] as [number, string][] : []),
+      ...(s.possibleMoves ? [[s.possibleMoves, `possible ${plural('moves', s.possibleMoves)}`, t.warning]] as [number, string, Style][] : []),
+      ...(issues.length ? [[issues.length, plural('problems', issues.length), t.danger]] as [number, string, Style][] : []),
+    ];
+    const digits = Math.max(...rows.map(([n]) => count(n).length));
+    out.push(...rows.map(([n, label, style]) => line([['  '], [count(n).padStart(digits), style ?? t.strong], [' '], [label, style]], this.width)));
+    if (!s.candidates) out.push(...this.hint('No packages found. Run `vestry create PATH` to make one from a folder or ZIP.'));
+    const findings = result.findings as Result[];
+    const paths = column(findings.map(finding => where(finding.path)));
+    out.push(...this.section('Copies', findings.map((finding, i) => line([
+      ['  '], [glyphs.success, t.success], [' '], [paths[i]],
+      [`  ${[readable(finding.discovery), shortId(finding.contentId ?? finding.packageDigest), finding.mainAction === 'set' ? 'made main' : finding.mainLocation === finding.path ? 'main' : ''].filter(Boolean).join('  ')}`, t.muted],
+    ], Number.POSITIVE_INFINITY))));
+    for (const finding of findings.filter(f => f.discovery === 'possible-move')) {
+      out.push(...this.hint(`The main copy at ${where(finding.previousMainLocation)} is missing. It may be on a drive that isn't connected. To make ${where(finding.path)} the main copy: \`vestry register ${pathArg(finding.path)} --main\``));
     }
-    out += `\n${this.heading('Common options')}\n  --home DIR      Use separate Vestry records (normally automatic)\n  --plan          Preview create/cp/mv/pack/unpack and preparation without writing\n  --offline       Resolve reads through managed local copies\n  --quiet         Hide routine progress; keep results and errors\n  --color MODE    auto, always, never (also respects NO_COLOR)\n  --json          One machine-readable result; no ANSI formatting\n  --events        NDJSON progress and result; no ANSI formatting\n\n  PACKAGE = path, full digest, or unambiguous digest prefix (aliases still work).\n  Multiple available copies: choose interactively, or use a path in scripts.\n`;
-    console.log(out);
+    if (result.exports?.length) {
+      const exports = result.exports as Result[];
+      const found = [...new Set(exports.map(e => e.path as string))];
+      const shown = column(found.map(where));
+      out.push(...this.section('Not in a package', found.map((path, i) => line([['  '], [shown[i]],
+        [`  ${exports.filter(e => e.path === path).map(e => e.status === 'ready' ? clean(e.source) : `${clean(e.source)} ${readable(e.status)}`).join(', ')}`, t.muted]], Number.POSITIVE_INFINITY)),
+      [['  exports Chronicle recognizes', t.muted]]));
+      out.push(...this.hint(`To package one: \`vestry create ${pathArg(found[0])}\``));
+    }
+    out.push(...this.section('Problems', issues.flatMap(issue => issue.code === 'AMBIGUOUS_MAIN_LOCATION'
+      ? [line([['  '], [glyphs.failure, t.danger], [' '], [clean(issue.message)]], Number.POSITIVE_INFINITY), ...this.hint(['Pick the main copy:', ...(issue.candidates as string[]).map(path => `\`vestry register ${pathArg(path)} --main\``)].join('\n'))]
+      : [line([['  '], [glyphs.failure, t.danger], [' '], [where(issue.path)], [`  ${clean(issue.message)}`, t.muted]], Number.POSITIVE_INFINITY)])));
+    const skipped = result.skipped as Result[];
+    const skippedPaths = column(skipped.map(skip => where(skip.path)));
+    out.push(...this.section('Skipped', skipped.map((skip, i) => line([['  '], [skippedPaths[i], t.muted], [`  ${clean(skip.reason)}`, t.muted]], Number.POSITIVE_INFINITY))));
+    return out;
   }
-  plan(result: Result) {
-    let out = `\n${this.heading(`PLAN  /  ${result.command}`)}\n\n  Preview only. No files changed.\n\n`;
-    for (const path of result.reads) out += this.row('Read', path);
-    for (const [index, path] of result.writes.entries()) out += this.row(index === result.writes.length - 1 ? 'Records' : 'Package', path);
-    out += '\n' + this.row('Staging', result.staging) + this.row('Space', result.scratch);
-    for (const move of result.moves ?? []) out += this.row('Move', `${move.from} → ${move.to}`);
-    out += this.row('Retain', result.retains);
-    out += this.row('Remove', result.deletes.length ? result.deletes.join('\n') : 'Nothing');
-    for (const note of result.limitations) out += this.row('Note', note);
-    console.log(out);
+
+  private packages(packages: Result[]): string[] {
+    const t = this.t;
+    if (!packages.length) return ['No packages yet', ...this.hint('Run `vestry create PATH` to make one from a folder or ZIP.')];
+    return packages.flatMap((pkg, i) => {
+      const first = (pkg.locations as Result[] ?? []).find(l => l.availability === 'available' && l.storage === 'external');
+      return [
+        ...(i ? [''] : []),
+        line([[named(pkg), t.strong], [pkg.aliases?.length ? `  ${shortId(pkg.contentId ?? pkg.packageDigest)}` : ''], [contents(pkg) ? `  ${contents(pkg)}` : '', t.muted]], Number.POSITIVE_INFINITY),
+        ...this.copies(pkg.locations ?? [], pkg.mainLocation, t),
+        ...(pkg.mainLocation ? [] : this.hint(first ? `No main copy. Run \`vestry register ${pathArg(first.path)} --main\` to make this one the main copy.` : 'No main copy. Run `vestry register PATH --main` to pick one.')),
+      ];
+    });
   }
-  private quarantine(reports: Result[] = []) {
-    let out = '';
-    for (const report of reports) {
-      out += `\n${this.heading('Finder metadata preserved', '33')}\n`;
-      out += this.row(report.copyOnly ? 'Files saved' : 'Files moved', report.files.length) + this.row('Quarantine', report.directory);
-      for (const file of report.files) out += this.row('File', file);
+
+  private operations(command: string, operations: Result[]): string[] {
+    const t = this.t;
+    if (!operations.length) return [command === 'recover' ? 'Nothing to recover' : 'No operations recorded'];
+    const kinds = Math.max(...operations.map(op => clean(op.kind).length));
+    const out = operations.flatMap(op => {
+      const unfinished = !['succeeded', 'discarded'].includes(op.status);
+      return [
+        line([operationStatus(op.status, t), [' '], [clean(op.kind).padEnd(kinds), t.strong], [`  ${when(op.startedAt)}`, t.muted], [`  ${clean(op.id)}`],
+          [op.status === 'succeeded' ? '' : `  ${readable(op.status)}${unfinished ? ` at ${readable(op.phase)}` : ''}`, unfinished ? t.warning : t.muted]], Number.POSITIVE_INFINITY),
+        `  ${where(op.source)}${op.destination && op.source !== op.destination ? ` ${glyphs.arrow} ${where(op.destination)}` : ''}`,
+        ...(op.error ? [line([['  Error: ', t.danger], [clean(op.error.message)]], Number.POSITIVE_INFINITY)] : []),
+        ...(op.retainOriginal && !op.sourceRetired && op.result?.cleanupRequired ? this.hint(`The original is kept at ${where(op.backup)}. To remove it: \`vestry cleanup ${clean(op.id)}\``) : []),
+      ];
+    });
+    if (command === 'recover') {
+      out.push('', ...this.hint(operations.length === 1 ? `Run \`vestry recover ${clean(operations[0].id)}\` to finish it, or add \`--discard\` to throw its work away.`
+        : 'Run `vestry recover OPERATION-ID` to finish one, or add `--discard` to throw its work away.'));
     }
     return out;
   }
-  result(command: string, result: Result, subcommand?: string) {
-    if (command === 'survey') {
-      const { table, uncounted } = this.surveyTable(result.readers);
-      process.stdout.write(table);
-      for (const note of uncounted) console.error(`vestry: ${note}`);
-      if (!result.readers.length) console.error('vestry: Chronicle did not recognize an export in this package. See what it reads: chronicle sources --all');
-      return;
-    }
-    let out = '\n';
-    if (command === 'scan') {
-      out += `${this.heading(result.issues.length ? 'SCAN  /  completed with issues' : 'SCAN  /  complete', result.issues.length ? '33' : '32')}\n\n`;
-      out += this.row('Directory', result.root) + this.row('Results', `${result.summary.verified} verified copies · ${result.summary.packages} packages · ${result.summary.newPackages} new`);
-      out += this.row('Changes', `${result.summary.mainLocationsSet} main locations set · ${result.summary.possibleMoves} possible moves`);
-      if (!result.summary.candidates) out += '\n  No package candidates found. Ordinary folders and loose ZIPs are not packages.\n';
-      for (const finding of result.findings) {
-        out += `\n  ${this.heading(readable(finding.discovery).toUpperCase())}  ${shortId(finding.contentId ?? finding.packageDigest)}\n`;
-        out += this.row('Found', finding.path) + this.row('Main', finding.mainLocation ?? 'Not designated') + this.row('Main change', finding.mainAction);
-        if (finding.discovery === 'possible-move') out += this.row('Note', 'Previous main location is missing. It may be disconnected; no move is assumed.');
-      }
-      if (result.exports?.length) {
-        out += `\n${this.heading('Not in a package')}  ${this.style('exports Chronicle recognizes', '2')}\n`;
-        for (const path of new Set<string>(result.exports.map((e: Result) => e.path))) {
-          const found = result.exports.filter((e: Result) => e.path === path);
-          out += this.row(found.map((e: Result) => e.source).join(', '), path + found.filter((e: Result) => e.status !== 'ready').map((e: Result) => ` · ${e.source} ${readable(e.status)}`).join(''));
-        }
-        out += '\n  Package one with: vestry create PATH\n';
-      }
-      for (const issue of result.issues) {
-        out += `\n${this.heading(issue.code === 'AMBIGUOUS_MAIN_LOCATION' ? 'Choose a main location' : 'Could not verify or register', '33')}\n`;
-        out += this.row('Path', issue.path) + this.row('Reason', issue.message);
-        for (const path of issue.candidates ?? []) out += this.row('Copy', path);
-      }
-      if (result.skipped.length) {
-        out += `\n${this.heading('Skipped')}\n`;
-        for (const skip of result.skipped) out += this.row('Path', skip.path) + this.row('Reason', skip.reason);
-      }
-      if (result.summary.possibleMoves || result.issues.some((i: Result) => i.code === 'AMBIGUOUS_MAIN_LOCATION')) out += '\n  Choose a specific main copy: vestry register PATH --main\n';
-    } else if (Array.isArray(result.packages)) {
-      out += `${this.heading(`PACKAGES  /  ${result.packages.length}`)}\n`;
-      if (!result.packages.length) out += '\n  Nothing registered yet.\n  Start with: vestry create ./folder --description "What this contains"\n';
-      for (const pkg of result.packages) {
-        const id = shortId(pkg.contentId ?? pkg.packageDigest);
-        out += `\n  ${this.style(clean(pkg.aliases?.join(', ') || id), '1')}  ${this.availability(pkg.copyAvailability ?? pkg.availability)}\n`;
-        out += this.row('Content ID', pkg.contentId ?? pkg.packageDigest) + this.contents(pkg) + this.row('Copies', pkg.copySummary);
-        const copies = (pkg.locations ?? []).filter((location: Result) => location.state !== 'evicted');
-        for (const [index, location] of copies.entries()) {
-          const branch = index === copies.length - 1 ? '└─' : '├─';
-          out += `    ${branch} ${this.style(clean(location.path), '1')}\n`;
-          const labels = [location.path === pkg.mainLocation ? 'MAIN' : undefined, this.availability(location.availability), clean(location.representation), location.storage === 'external' ? undefined : clean(location.storage)].filter(Boolean);
-          out += `       ${labels.join(' · ')}\n`;
-        }
-        if (!pkg.mainLocation) out += '       No main copy designated\n';
-      }
-    } else if (Array.isArray(result.operations)) {
-      out += `${this.heading(command === 'recover' ? 'RECOVERY' : 'HISTORY')}  ${result.operations.length} operation(s)\n`;
-      if (!result.operations.length) out += command === 'recover' ? '\n  No pending operations.\n' : '\n  No matching operation records.\n';
-      for (const op of result.operations) {
-        out += `\n  ${this.style(clean(op.kind), '1')}  ${this.availability(op.status)}  ${this.style(clean(op.startedAt), '2')}\n`;
-        out += this.row('Operation', op.id) + this.row('Stage', op.phase) + this.row('Source', op.source);
-        if (op.destination && op.source !== op.destination) out += this.row('Destination', op.destination);
-        if (op.retainOriginal && !op.sourceRetired && op.result?.cleanupRequired) out += this.row('Recovery copy', op.backup) + this.row('Cleanup', `vestry cleanup ${op.id} (use the same --home, if supplied)`);
-        if (op.error) out += this.row('Error', op.error.message);
-      }
-      if (command === 'recover' && result.operations.length) out += '\n  Resume: vestry recover OPERATION-ID (use the same --home, if supplied)\n';
-    } else if (Array.isArray(result.copies)) {
-      out += `${this.heading(`LOCAL COPIES  /  ${result.copies.length}`)}\n`;
-      if (!result.copies.length) out += '\n  No managed copies. Keep one with: vestry cache add REF --pin\n';
-      for (const copy of result.copies) out += `\n  ${this.style(copy.pinned ? 'PINNED' : 'DISPOSABLE', '1')}  ${this.availability(copy.availability)}\n` + this.row('Content ID', copy.contentId) + this.row('Package digest', copy.packageDigest) + this.row('Location', copy.path) + this.row('Format', copy.representation);
-    } else {
-      const titles: Record<string, string> = { eject: 'Package ejected', edit: 'Vestry metadata updated', show: 'Package details', check: 'Integrity verified', cp: 'Package copied', mv: 'Package relocated', cleanup: 'Recovery copy cleaned up', create: 'Package created', seal: 'Package sealed', pack: 'Package packed', unpack: 'Package expanded', move: 'Package moved', register: 'Package registered', verify: 'Integrity verified', inspect: 'Package inspected', locate: 'Known locations', forget: 'Package forgotten', gather: 'Draft created', describe: 'Description updated', cache: subcommand === 'evict' ? 'Cached copy evicted' : subcommand === 'unpin' ? 'Copy unpinned' : result.pinned ? 'Offline copy pinned' : 'Local copy ready', recover: readable(result.status ?? 'Recovery complete') };
-      const factual = ['locate', 'show'].includes(command) || result.status === 'interrupted';
-      out += `${this.heading(`${factual ? '•' : '✓'} ${titles[command] ?? 'Complete'}`, factual ? '36' : '32')}  ${this.style(`${((Date.now() - this.started) / 1000).toFixed(1)}s`, '2')}\n\n`;
-      out += this.row('Location', result.path) + this.row('Main', result.mainLocation !== result.path ? result.mainLocation : undefined);
-      out += this.row('Format', result.representation === 'packed' ? 'Packed · data.zip' : result.representation === 'expanded' ? 'Expanded · data/' : undefined);
-      if (['show', 'locate', 'inspect'].includes(command)) out += this.contents(result);
-      else if (result.payloadFiles !== undefined) out += this.row('Contents', `${Number(result.payloadFiles).toLocaleString('en-US')} files · ${formatBytes(result.payloadBytes)} logical payload`);
-      if (result.aliases?.length) out += this.row('Aliases', result.aliases.join(', '));
-      out += this.row('Content ID', result.contentId ?? result.payloadDigest);
-      if (['show', 'inspect', 'check', 'verify'].includes(command)) out += this.row('Package digest', result.packageDigest);
-      if (result.identityConfidence === 'expected') out += this.row('Identity', 'Expected from records; not reverified by this lookup');
-      if (result.storage) out += this.row('Storage', result.storage === 'pinned' ? 'Pinned · retained until explicitly unpinned' : result.storage === 'cache' ? 'Disposable cache' : result.storage);
-      if (result.locations?.length) {
-        out += `\n${this.heading('Copies')}\n`;
-        for (const location of result.locations) out += `\n  ${this.style(location.path === result.mainLocation ? 'MAIN' : clean(location.storage).toUpperCase(), '1')}  ${this.availability(location.availability)}\n` + this.row('Path', location.path) + this.row('Package digest', location.packageDigest) + this.row('Format', location.representation) + this.row('Last checked', location.lastVerifiedAt);
-      }
-      if (result.metadata) out += `\n${this.heading('Vestry metadata (editable)')}\n` + this.row('Title', result.metadata.title) + this.row('Description', result.metadata.description) + this.row('Notes', result.metadata.notes);
-      if (new Set((result.metadataVariants ?? []).map((v: Result) => JSON.stringify([v.metadata?.title, v.metadata?.description, v.metadata?.notes]))).size > 1) out += '\n  Copies have differing catalog metadata; inspect --json for all recorded values.\n';
-      if (result.readers?.length) {
-        out += `\n${this.heading('Readers (Chronicle)')}\n`;
-        for (const reader of result.readers) out += this.row(reader.source, `${exportRoot(reader.root)} · ${readable(reader.strategy)}${reader.status === 'ready' ? '' : ` · ${readable(reader.status)}`}`);
-      }
-      if (result.lastSurvey) {
-        const { table, uncounted } = this.surveyTable(result.lastSurvey.readers, '  ');
-        out += `\n${this.heading('Last survey')}  ${this.style(clean(result.lastSurvey.endedAt), '2')}\n\n${table}` + uncounted.map(note => `  ${this.wrap(note, 2)}\n`).join('');
-      }
-      if (result.sealedReadme) out += `\n${this.heading('Sealed description (in package)')}\n  ${this.wrap(String(result.sealedReadme).trimEnd(), 2)}\n`;
-      if (result.readme) out += `\n${this.heading('Description')}\n  ${this.wrap(String(result.readme).trimEnd(), 2)}\n`;
-      if (result.message) out += `\n  ${this.wrap(result.message, 2)}\n`;
-      if (result.sourceMoved) out += '\n  Original ZIP moved unchanged into the package as data.zip; no archive copy.\n';
-      if (result.sourceRetained) out += command === 'create' ? '\n  Source ZIP retained unchanged.\n' : '\n  Original package retained.\n';
-      if (result.cleanupRequired) out += '\n' + this.row('Recovery copy', result.recoveryCopy) + '\n  Original retained; source disk space has not been freed.\n  Remove it after rechecking the destination:\n    vestry cleanup ' + clean(result.operationId) + (result.cleanupHome ? ' --home ' + clean(quote(result.cleanupHome)) : '') + '\n';
-      if (['pack', 'unpack'].includes(command)) out += '\n  Package identity and descriptive metadata preserved.\n';
-      if (result.timings?.length) {
-        out += `\n${this.heading('Stage timings')}\n`;
-        for (const timing of result.timings) out += this.row(`${Number(timing.seconds).toFixed(1)}s`, timing.stage);
-      }
-      if (result.operationId) out += '\n' + this.row('Operation', result.operationId);
-    }
-    out += this.quarantine(result.quarantined);
-    console.log(out);
+
+  private cached(copies: Result[]): string[] {
+    const t = this.t;
+    if (!copies.length) return ['No local copies', ...this.hint('Run `vestry cache add PACKAGE --pin` to keep one for when your archive is offline.')];
+    return copies.flatMap(copy => {
+      const [glyph, ...state] = availability(copy.availability, t);
+      return [line([glyph, [' '], [shortId(copy.contentId), t.strong], [`  ${copy.pinned ? 'pinned' : 'disposable'}  ${clean(copy.representation)}`, t.muted], ...state], Number.POSITIVE_INFINITY), `  ${where(copy.path)}`];
+    });
   }
-  error(command: string, failure: { code: string; message: string; exitCode: number; details: Result }, reports: Result[] = []) {
-    const titles: Record<number, string> = { 2: 'Check the command', 3: 'Integrity check failed', 4: 'Package or resource unavailable', 5: 'Operation could not proceed', 130: 'Operation interrupted' };
-    let out = `\n${this.heading(`✗ ${titles[failure.exitCode] ?? 'Operation failed'}`, '31', true)}\n\n  ${clean(failure.message)}\n`;
-    out += `\n  Code         ${clean(failure.code)}\n`;
-    if (failure.details.operationId) {
-      out += `  Operation    ${clean(failure.details.operationId)}\n\n  Inspect pending work:\n    vestry recover${failure.details.home ? ` --home ${clean(quote(failure.details.home))}` : ''}\n`;
-    } else if (failure.exitCode === 2) out += `\n  Usage: vestry ${clean(command)} --help\n`;
-    if (failure.details.candidates) out += '\n  Matching packages or copies:\n' + failure.details.candidates.map((c: unknown) => `    ${clean(c)}\n`).join('');
-    out += this.quarantine(reports);
-    console.error(colorEnabled(this.mode, !!process.stderr.isTTY) ? out : out.replace(/\x1b\[[0-9;]*m/g, ''));
+
+  /** A package or an operation on one: what happened, then its details. */
+  private details(command: string, result: Result, subcommand?: string): string[] {
+    const t = this.t, width = this.width;
+    const lookup = ['show', 'locate'].includes(command), described = ['show', 'locate', 'inspect'].includes(command);
+    const out = [lookup
+      ? line([[named(result), t.strong], [result.aliases?.length ? `  ${shortId(result.contentId)}` : '', t.muted]], width)
+      : summary({ status: result.status === 'interrupted' ? 'warning' : 'success', title: title(command, result, subcommand), durationMs: Date.now() - this.started }, t, width)];
+    const entries: [string, string | undefined][] = [
+      ['Location', result.path && where(result.path)],
+      ['Main', !lookup && result.mainLocation && result.mainLocation !== result.path ? where(result.mainLocation) : undefined],
+      ['Format', lookup ? undefined : format(result.representation)],
+      ['Contents', contents(result) ?? (described ? 'not recorded yet' : undefined)],
+      ['Aliases', !lookup && result.aliases?.length ? clean(result.aliases.join(', ')) : undefined],
+      ['Content ID', clean(result.contentId ?? result.payloadDigest) || undefined],
+      ['Package digest', ['show', 'inspect', 'check', 'verify'].includes(command) && result.packageDigest ? clean(result.packageDigest) : undefined],
+      ['Identity', result.identityConfidence === 'expected' ? 'expected from the catalog, not rechecked' : ['pack', 'unpack'].includes(command) ? 'unchanged, with its catalog details' : undefined],
+      ['Storage', result.storage === 'pinned' ? 'pinned, kept until you unpin it' : result.storage === 'cache' ? 'disposable cache' : result.storage && clean(result.storage)],
+      ['Original', result.sourceMoved ? 'moved in unchanged, as data.zip' : result.sourceRetained ? 'kept, unchanged' : undefined],
+      ['Recovery copy', result.cleanupRequired ? where(result.recoveryCopy) : undefined],
+      ['Operation', clean(result.operationId) || undefined],
+    ];
+    out.push(...card(entries.filter((entry): entry is [string, string] => !!entry[1]), t, width, 2));
+    if (result.message) out.push(...paragraph(this.next(clean(result.message)), t, width, 2));
+    if (result.cleanupRequired) out.push(...this.hint(`The original still takes up space. Once you've checked ${command === 'eject' ? 'the restored files' : 'the new copy'}, run \`vestry cleanup ${clean(result.operationId)}\` to remove it.`));
+    if (described && contents(result) === undefined) out.push(...this.hint(`Run \`vestry check ${shortId(result.contentId)}\` to record its contents.`));
+    if (result.locations?.length) out.push(...this.section('Copies', this.copies(result.locations, result.mainLocation, t, { checked: true })));
+    if (result.metadata) {
+      out.push(...this.section('Catalog', card((['title', 'description', 'notes'] as const).filter(key => result.metadata[key])
+        .map(key => [key[0].toUpperCase() + key.slice(1), clean(String(result.metadata[key]).trimEnd())] as [string, string]), t, width, 2)));
+    }
+    if (new Set((result.metadataVariants ?? []).map((v: Result) => JSON.stringify([v.metadata?.title, v.metadata?.description, v.metadata?.notes]))).size > 1) {
+      out.push(...this.hint(`Copies have different catalog details. Run \`vestry inspect ${shortId(result.contentId)} --json\` to see them all.`));
+    }
+    if (result.readers?.length) {
+      const readers = result.readers as Result[];
+      const [sources, roots] = [column(readers.map(r => clean(r.source))), column(readers.map(r => exportRoot(r.root)))];
+      out.push(...this.section('Readers', readers.map((r, i) => line([['  '], [sources[i]], [`  ${roots[i]}  ${readable(r.strategy)}${r.status === 'ready' ? '' : `  ${readable(r.status)}`}`, t.muted]], Number.POSITIVE_INFINITY))));
+    }
+    if (result.lastSurvey) {
+      const { lines, uncounted } = this.surveyTable(result.lastSurvey.readers, t, 2);
+      out.push(...this.section('Last survey', [...lines, ...uncounted.map(note => line([['  '], [glyphs.warning, t.warning], [' '], [note]], Number.POSITIVE_INFINITY))], [[`  ${when(result.lastSurvey.endedAt)}`, t.muted]]));
+    }
+    const prose = (text: unknown) => String(text).trimEnd().split('\n').flatMap(part => part ? paragraph(clean(part), t, width, 2, { cut: false }) : ['']);
+    if (result.sealedReadme) out.push(...this.section('README.txt', prose(result.sealedReadme), [['  in the package', t.muted]]));
+    if (result.readme) out.push(...this.section('Description', prose(result.readme)));
+    if (result.timings?.length) out.push(...this.section('Timings', card((result.timings as Result[]).map(timing => [`${Number(timing.seconds).toFixed(1)}s`, clean(timing.stage)]), t, width, 2)));
+    return out;
+  }
+
+  /**
+   * What stopped the command, and what to do about it: the error's hint, a
+   * command to run for each candidate it names, or the command's help.
+   */
+  error(command: string, failure: Failure, reports: Result[] = [], retry?: (candidate: string) => string | undefined) {
+    // Cancelling is a choice, not a failure: said plainly.
+    if (failure.details.cancelled) return this.log.info(clean(failure.message));
+    const steps: string[] = [];
+    if (failure.hint) steps.push(failure.hint);
+    if (failure.details.operationId && !failure.hint?.includes('vestry recover')) steps.push(`Its operation is ${failure.details.operationId}. Run \`vestry recover\` to see what's unfinished.`);
+    else if (!failure.hint && failure.exitCode === 2) steps.push(COMMANDS[command] ? `Run \`vestry ${command} --help\` for help.` : 'Run `vestry --help` to see the commands.');
+    const candidates = (failure.details.candidates ?? []) as string[];
+    if (candidates.length) {
+      const commands = candidates.map(candidate => retry?.(candidate));
+      steps.push(commands.every(Boolean) ? ['Pick one:', ...commands.map(text => `\`${text}\``)].join('\n')
+        : ['Pass one of these:', ...candidates.map(candidate => `\`${pathArg(clean(candidate))}\``)].join('\n'));
+    }
+    this.stopActivity();
+    this.log.emit({ level: 'error', kind: 'error', message: tildes(clean(failure.message)), error: { code: failure.code, exitCode: failure.exitCode },
+      ...(steps.length && { hint: { action: this.next(steps.join('\n')) } }) });
+    this.log.flush();
+    if (reports.length) process.stderr.write(`${this.quarantine(reports, tokens(colorEnabled(this.mode, !!process.stderr.isTTY))).join('\n')}\n`);
   }
 }

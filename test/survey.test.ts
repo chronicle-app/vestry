@@ -59,7 +59,7 @@ it('surveys each export Chronicle finds, keeps its readers by content, and leave
   expect(first.result).toMatchObject({ command: 'survey', contentId: before.payloadDigest, representation: 'expanded', identityConfidence: 'expected', chronicle: '9.9.9', foundReaders: true, exitCode: 0 });
   expect(first.result.readers).toEqual([
     { source: 'notes', strategy: 'archive', root: 'export', pluginVersion: '1.2.3', outcome: 'counted', survey: expect.objectContaining({ notes: expect.objectContaining({ count: 3 }) }) },
-    { source: 'old-notes', strategy: 'archive', root: 'old', outcome: 'skipped', reason: expect.stringContaining('cannot read it yet') },
+    { source: 'old-notes', strategy: 'archive', root: 'old', outcome: 'skipped', reason: expect.stringContaining('can\'t read it yet') },
   ]);
   const surveyed = (await calls()).find(args => args[0] === 'survey')!;
   expect(surveyed).toEqual(expect.arrayContaining(['notes', '--strategy', 'archive', '--input', join(source, 'data', 'export'), '--account', 'me']));
@@ -86,7 +86,7 @@ it('prints a survey as a table, a word to a cell, and names on stderr the export
     'notes   notes      3  2019-05-01  2023-02-01  folders=2',
     '',
   ]);
-  expect(printed.stderr).toBe('vestry: old-notes in data/old: Chronicle recognizes this export but cannot read it yet.\n');
+  expect(printed.stderr).toMatch(/^\d\d:\d\d:\d\d ! old-notes in data\/old: Chronicle recognizes this export but can't read it yet\n$/);
   expect(run(['show', source]).stdout).toContain('  notes   notes      3  2019-05-01  2023-02-01  folders=2\n');
 });
 
@@ -107,19 +107,19 @@ it('says when Chronicle is missing, and records what it could not count', async 
   await createPackage(source, context);
   const missing = spawnSync(process.execPath, ['bin/vestry.js', 'survey', source, '--home', context.home!, '--json'], { encoding: 'utf8', env: { ...process.env, PATH: join(root, 'empty') } });
   expect(missing.status).toBe(4);
-  expect(JSON.parse(missing.stdout).error).toMatchObject({ code: 'CHRONICLE_UNAVAILABLE', message: expect.stringContaining('npm install -g @chronicle.app/cli') });
+  expect(JSON.parse(missing.stdout).error).toMatchObject({ code: 'CHRONICLE_UNAVAILABLE', hint: expect.stringContaining('npm install -g @chronicle.app/cli') });
   const failing = cli(['survey', source], { FAKE_CHRONICLE_FAIL: 'survey' });
   expect(failing.status).toBe(1);
   expect(failing.result.readers[0]).toMatchObject({ source: 'notes', outcome: 'failed', reason: expect.stringMatching(/^Nothing at .*chronicle survey notes --help/) });
   expect(await readdir(join(context.home!, 'surveys'))).toHaveLength(1);
   const unregistered = join(root, 'unregistered'); await mkdir(unregistered);
   await createPackage(unregistered, { home: join(root, 'other-records') });
-  expect(cli(['survey', unregistered]).result.error.message).toMatch(/^Register this package with scan/);
+  expect(cli(['survey', unregistered]).result.error).toMatchObject({ code: 'INVALID_ARGUMENT', hint: expect.stringContaining('vestry register') });
   const shelf = join(root, 'shelf'); await mkdir(join(shelf, 'notes'), { recursive: true });
   await writeFile(join(shelf, 'notes', 'notes.json'), '[]'); await createPackage(join(shelf, 'notes'), context);
   const folder = cli(['survey', shelf]);
   expect(folder.status).toBe(2);
-  expect(folder.result.error.message).toMatch(/^Not a Vestry package: .*No bagit.txt found/);
+  expect(folder.result.error.message).toMatch(/^Not a Vestry package: .* has no bagit\.txt$/);
 });
 
 it('copies a ZIP out of a packed copy for Chronicle to read, and removes the copy after', async () => {
@@ -158,8 +158,8 @@ it('lists the exports Chronicle recognizes outside packages when scanning a fold
   expect((await calls()).find(args => args[0] === 'scan')![1]).toBe(shelf);
   const printed = run(['scan', shelf, '--quiet'], { FAKE_CHRONICLE_ROWS: rows }).stdout;
   expect(printed).toContain(`Not in a package`);
-  expect(printed).toContain(`${join(shelf, 'takeout.zip')} · takeout unsupported`);
-  expect(printed).toContain('Package one with: vestry create PATH');
+  expect(printed).toMatch(new RegExp(`${join(shelf, 'takeout.zip')} +takeout unsupported`));
+  expect(printed).toContain(`vestry create ${join(shelf, 'loose')}`);
 
   const failing = cli(['scan', shelf], { FAKE_CHRONICLE_FAIL: 'scan' });
   expect(failing.status).toBe(0);

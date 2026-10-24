@@ -26,16 +26,16 @@ export async function requirePackageDirectory(root: string, expected?: string): 
   try { stat = await lstat(root); }
   catch (error) {
     if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
-      throw new VestryError('RESOURCE_UNAVAILABLE', `Path not found: ${root}. Check the package path and whether its drive is connected.`, 4);
+      throw new VestryError('RESOURCE_UNAVAILABLE', `Path not found: ${root}`, 4, {}, 'Check the path, and that its drive is connected.');
     }
     throw error;
   }
-  if (!stat.isDirectory()) throw usage(`Not a package folder: ${root}. Use the folder containing bagit.txt.`);
+  if (!stat.isDirectory()) throw usage(`Not a package folder: ${root}`, 'Use the folder that holds bagit.txt.');
   for (const name of ['bagit.txt', 'bag-info.txt', 'manifest-sha256.txt', 'tagmanifest-sha256.txt']) {
     try { await lstat(join(root, name)); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      if (name === 'bagit.txt' && !expected) throw usage(`Not a Vestry package: ${root}. No bagit.txt found. Check the path and select the package folder.`);
+      if (name === 'bagit.txt' && !expected) throw usage(`Not a Vestry package: ${root} has no bagit.txt`, 'Use the folder that holds bagit.txt.');
       throw integrity(`Package is missing ${name}: ${root}.`);
     }
   }
@@ -105,7 +105,7 @@ export async function buildBag(source: string, destination: string, readme: stri
   }
   activity?.('Checking copied payload');
   const payload = await walk(join(destination, 'data'), 'data/', new Set(), reading);
-  if (digest('payload', payload) !== digest('payload', original.map(i => ({ ...i, path: 'data/' + i.path }))) || digest('code', await walk(source, '', new Set(), reading)) !== digest('code', original)) throw integrity('Draft payload changed during sealing.');
+  if (digest('payload', payload) !== digest('payload', original.map(i => ({ ...i, path: 'data/' + i.path }))) || digest('code', await walk(source, '', new Set(), reading)) !== digest('code', original)) throw integrity('Draft payload changed during sealing');
   await writeTags(destination, payload, readme, description, timestamps);
   if (packed) {
     signal?.throwIfAborted();
@@ -143,7 +143,7 @@ export async function writeTags(destination: string, payload: Item[], readme: st
   await writeFile(join(destination, 'bagit.txt'), DECLARATION);
   if (readme !== undefined) await writeFile(join(destination, 'README.txt'), readme.trimEnd() + FOOTER);
   const short = description ?? readme?.split(/\r?\n/).find(line => line.trim())?.trim();
-  if (short !== undefined && /[\r\n]/.test(short)) throw integrity('Description must be a single line.');
+  if (short !== undefined && /[\r\n]/.test(short)) throw integrity('Description must be a single line');
   const bytes = payload.reduce((sum, i) => sum + i.size, 0n);
   const timestamp = new Date().toISOString();
   const originalZip = timestamps?.originalZipMtimeNs;
@@ -159,7 +159,7 @@ export async function buildZipBag(source: string, destination: string, readme: s
   const reading = (path: string, bytes: string, total: string) => activity?.(`Reading ZIP: ${path}`, bytes, total);
   const sourceStat = await lstat(source, { bigint: true });
   const timestamps: Timestamps = { version: 1, files: [], originalZipMtimeNs: String(sourceStat.mtimeNs) };
-  if (!sourceStat.isFile()) throw integrity('ZIP source must be a regular file.');
+  if (!sourceStat.isFile()) throw integrity('ZIP source must be a regular file');
   const container = join(destination, 'data.zip');
   const hash = createHash('sha256'); let size = 0n;
   activity?.('Copying and checksumming ZIP', '0', sourceStat.size.toString());
@@ -172,7 +172,7 @@ export async function buildZipBag(source: string, destination: string, readme: s
     createWriteStream(container, { flags: 'wx', highWaterMark: 1024 * 1024 }), { signal });
   const before = { sha256: hash.digest('hex'), size };
   const afterCopyStat = await lstat(source, { bigint: true });
-  if (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => sourceStat[key as keyof typeof sourceStat] !== afterCopyStat[key as keyof typeof afterCopyStat])) throw integrity('Source ZIP changed while copying; no package published.');
+  if (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => sourceStat[key as keyof typeof sourceStat] !== afterCopyStat[key as keyof typeof afterCopyStat])) throw integrity('The ZIP changed while it was copied', 'Nothing was published. Try again once the ZIP stops changing.');
   signal?.throwIfAborted();
   activity?.('Checking files inside the ZIP');
   let payload: Item[];
@@ -184,7 +184,7 @@ export async function buildZipBag(source: string, destination: string, readme: s
   }
   const copied = await hashFile(container, 'data.zip', reading);
   const after = await hashFile(source, 'data.zip', reading);
-  if (before.sha256 !== copied.sha256 || before.sha256 !== after.sha256 || before.size !== copied.size || before.size !== after.size) throw integrity('Source ZIP changed during packaging; no package published.');
+  if (before.sha256 !== copied.sha256 || before.sha256 !== after.sha256 || before.size !== copied.size || before.size !== after.size) throw integrity('The ZIP changed while it was packaged', 'Nothing was published. Try again once the ZIP stops changing.');
   signal?.throwIfAborted();
   await restoreMtime(container, timestamps.originalZipMtimeNs!);
   await writeTags(destination, payload, readme, description, timestamps);

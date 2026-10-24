@@ -7,6 +7,7 @@ import * as yauzl from 'yauzl';
 import { cacheRoot } from './cache.js';
 import { chronicleVersion, scanExports, surveyExport, type KindSurvey } from './chronicle.js';
 import { conflict, diagnostic, integrity, usage } from './errors.js';
+import { pathArg } from './output/index.js';
 import { atomicJson, within } from './fs-util.js';
 import { parseManifest, utf8 } from './inventory.js';
 import { requirePackageDirectory } from './package.js';
@@ -133,8 +134,8 @@ export async function surveyPackage(ref: string, context: Context & { offline?: 
     const registered = (state: Awaited<ReturnType<typeof readRegistry>>) => Object.values(state.packages).find(p => p.locations.some(l => l.path === resolved.path && l.state !== 'evicted'));
     await requirePackageDirectory(resolved.path, resolved.expected);
     const known = registered(await readRegistry(context));
-    if (!known) throw usage('Register this package with scan before surveying it.');
-    if (!context.check && known.locations.find(l => l.path === resolved.path)!.state === 'changed') throw conflict('This copy changed since it was last checked. Run vestry check on it first.');
+    if (!known) throw usage(`${resolved.path} isn\'t in the catalog`, `Run \`vestry register ${pathArg(resolved.path)}\` to add it, then survey it.`);
+    if (!context.check && known.locations.find(l => l.path === resolved.path)!.state === 'changed') throw conflict('This copy changed since it was last checked', `Run \`vestry survey ${pathArg(resolved.path)} --check\` to check it again first.`);
     const startedAt = new Date().toISOString(), chronicle = await chronicleVersion(context.signal);
     if (context.check) await verifyRecorded(resolved.path, { ...context, expected: resolved.expected });
     const record = registered(await readRegistry(context))!, location = record.locations.find(l => l.path === resolved.path)!;
@@ -156,17 +157,17 @@ export async function surveyPackage(ref: string, context: Context & { offline?: 
       for (const reader of readers) {
         const base = { source: reader.source, strategy: reader.strategy, root: reader.root };
         if (reader.status !== 'ready') {
-          results.push({ ...base, outcome: 'skipped', reason: reader.status === 'unsupported' ? 'Chronicle recognizes this export but cannot read it yet.' : `Chronicle reports it as ${reader.status}.` });
+          results.push({ ...base, outcome: 'skipped', reason: reader.status === 'unsupported' ? 'Chronicle recognizes this export but can\'t read it yet' : `Chronicle reports it as ${reader.status}` });
           continue;
         }
         context.onActivity?.(`Counting ${reader.source}…`);
         try {
           const row = await surveyExport(reader.source, reader.strategy, await files.input(reader.root), reader.options, context.signal);
-          results.push({ ...base, ...(row.pluginVersion && { pluginVersion: row.pluginVersion }), ...(row.survey ? { outcome: 'counted', survey: row.survey } : { outcome: row.error ? 'failed' : 'no-answer', reason: row.error ?? 'Chronicle cannot say how much it holds.' }) });
+          results.push({ ...base, ...(row.pluginVersion && { pluginVersion: row.pluginVersion }), ...(row.survey ? { outcome: 'counted', survey: row.survey } : { outcome: row.error ? 'failed' : 'no-answer', reason: row.error ?? 'Chronicle can\'t say how much it holds' }) });
         } catch (error) {
           const failure = diagnostic(context.signal?.aborted ? context.signal.reason : error);
           if (failure.code !== 'CHRONICLE_FAILED') throw failure;
-          results.push({ ...base, outcome: 'failed', reason: failure.message });
+          results.push({ ...base, outcome: 'failed', reason: [failure.message, failure.hint].filter(Boolean).join('. ') });
         }
       }
       const survey: SurveyRecord = { schemaVersion: 1, id: randomUUID(), contentId, packageDigest: record.packageDigest, path: resolved.path, representation: location.representation,

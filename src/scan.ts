@@ -33,10 +33,10 @@ async function unpackaged(root: string, boundaries: string[], signal?: AbortSign
 }
 
 export async function scanDirectory(input: string, context: Context & { makeMain?: boolean; offline?: boolean; exports?: boolean; onFound?: (finding: Finding) => void } = {}): Promise<Record<string, unknown>> {
-  if (!(await lstat(resolve(input))).isDirectory()) throw usage('scan requires a regular directory; symlink roots are not followed.');
+  if (!(await lstat(resolve(input))).isDirectory()) throw usage(`Not a folder: ${input}`, 'Pass a folder. Symlinks aren\'t followed.');
   const root = await canonical(input);
   for (let parent = dirname(root); parent !== dirname(parent); parent = dirname(parent)) {
-    if (await exists(join(parent, 'bagit.txt')) || await exists(join(parent, '.vestry-draft.json'))) throw usage('Scan a package root or its containing directory, not a package payload or draft.');
+    if (await exists(join(parent, 'bagit.txt')) || await exists(join(parent, '.vestry-draft.json'))) throw usage('Can\'t scan inside a package or draft', 'Scan the package\'s folder, or the folder that holds it.');
   }
   const excluded = await Promise.all([homePath(context.home), cacheRoot(context)].map(path => canonical(path)));
   const before = await readRegistry(context);
@@ -102,7 +102,7 @@ export async function scanDirectory(input: string, context: Context & { makeMain
     if (copies.length > 1 && (context.makeMain || !record?.mainLocation)) {
       for (const copy of copies) copy.mainAction = 'ambiguous';
       issues.push({ path: root, code: 'AMBIGUOUS_MAIN_LOCATION', exitCode: 5,
-        message: `Multiple copies of ${id} were found. Choose one with vestry register PATH --main.`, candidates: copies.map(copy => copy.path) });
+        message: `Found ${copies.length} copies of ${id.split(':').at(-1)!.slice(0, 12)}, ${record?.mainLocation ? 'so --make-main can\'t pick one' : 'and none is the main copy'}`, candidates: copies.map(copy => copy.path) });
     } else if (copies.length === 1 && (context.makeMain || !record?.mainLocation)) {
       const copy = copies[0];
       try {
@@ -126,7 +126,7 @@ export async function scanDirectory(input: string, context: Context & { makeMain
     try { exports = await unpackaged(root, [...packages, ...skipped.map(skip => skip.path), ...excluded], context.signal); }
     catch (error) {
       const failure = diagnostic(context.signal?.aborted ? context.signal.reason : error);
-      if (failure.code === 'CHRONICLE_FAILED') warnings.push(`Chronicle could not look for exports outside packages. ${failure.message}`);
+      if (failure.code === 'CHRONICLE_FAILED') warnings.push(`Chronicle could not look for exports outside packages. ${[failure.message, failure.hint].filter(Boolean).join('. ')}`);
       else if (failure.code !== 'CHRONICLE_UNAVAILABLE') throw failure;
     }
   }

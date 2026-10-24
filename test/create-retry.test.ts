@@ -57,14 +57,14 @@ it('refuses complete but different staged payloads and leaves the original intac
   await buildBag(other, op.staging!, undefined);
   // Record ownership to exercise content matching independently of ownership refusal.
   op.stageOwner = await owner(op.staging!); await save(context.home!, op);
-  await expect(createPackage(source, context)).rejects.toThrow('does not match');
+  await expect(createPackage(source, context)).rejects.toThrow('doesn\'t match');
   expect(await readFile(join(source, 'note'), 'utf8')).toBe('Original bytes');
 });
 it('keeps incomplete staging until explicit restart and gives forget an actionable message', async () => {
   const op = await failedCreation(false);
-  await expect(createPackage(source, context)).rejects.toThrow('--restart');
+  await expect(createPackage(source, context)).rejects.toMatchObject({ hint: expect.stringContaining('--restart') });
   expect(await exists(op.staging!)).toBe(true);
-  await expect(forgetPackage(source, context)).rejects.toThrow('unfinished creation');
+  await expect(forgetPackage(source, context)).rejects.toMatchObject({ hint: expect.stringContaining(`vestry create ${source}`) });
   await createPackage(source, { ...context, restart: true });
   expect(await readFile(join(source, 'data/note'), 'utf8')).toBe('Original bytes');
 });

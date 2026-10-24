@@ -216,7 +216,7 @@ it('releases a killed registry writer lock but refuses to unlock a live writer',
     await new Promise<void>((yes, no) => { child.stdout.once('data', () => yes()); child.once('exit', code => no(new Error(`Worker exited early: ${code}`))); });
     await expect(releaseRegistryLock(context)).rejects.toMatchObject({ exitCode: 5 });
     const ended = new Promise(resolve => child.once('exit', resolve)); child.kill('SIGKILL'); await ended;
-    await expect(cacheEvict('example', context)).rejects.toThrow('Registry lock owner has exited');
+    await expect(cacheEvict('example', context)).rejects.toMatchObject({ hint: expect.stringContaining('vestry recover --release-registry-lock') });
     await releaseRegistryLock(context); await cacheEvict('example', context);
     expect((await cacheList(context)).copies).toEqual([]);
   } finally { child.kill('SIGKILL'); }
