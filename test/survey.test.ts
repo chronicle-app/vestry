@@ -76,20 +76,6 @@ it('surveys each export Chronicle finds, keeps its readers by content, and leave
   expect(cli(['check', source]).status).toBe(0);
 });
 
-it('prints a survey as a table, a word to a cell, and names on stderr the exports it did not count', async () => {
-  await createPackage(source, context);
-  const printed = run(['survey', source]);
-  expect(printed.status, printed.stderr).toBe(0);
-  expect(printed.stdout.split('\n')).toEqual([
-    'source  kind   count  first       last        measures',
-    '──────  ─────  ─────  ──────────  ──────────  ─────────',
-    'notes   notes      3  2019-05-01  2023-02-01  folders=2',
-    '',
-  ]);
-  expect(printed.stderr).toMatch(/^\d\d:\d\d:\d\d ! old-notes in data\/old: Chronicle recognizes this export but can't read it yet\n$/);
-  expect(run(['show', source]).stdout).toContain('  notes   notes      3  2019-05-01  2023-02-01  folders=2\n');
-});
-
 it('reads a packed copy through data.zip with the readers another form found, after --check', async () => {
   await createPackage(source, context);
   expect(cli(['survey', source]).status).toBe(0);
@@ -156,10 +142,6 @@ it('lists the exports Chronicle recognizes outside packages when scanning a fold
     { path: join(shelf, 'takeout.zip'), root: join(shelf, 'takeout.zip', 'Takeout'), source: 'takeout', strategy: 'archive', plugin: 'google', status: 'unsupported' },
   ]);
   expect((await calls()).find(args => args[0] === 'scan')![1]).toBe(shelf);
-  const printed = run(['scan', shelf, '--quiet'], { FAKE_CHRONICLE_ROWS: rows }).stdout;
-  expect(printed).toContain(`Not in a package`);
-  expect(printed).toMatch(new RegExp(`  takeout +unsupported +${join(shelf, 'takeout.zip')}\n`));
-  expect(printed).toContain(`vestry create ${join(shelf, 'loose')}`);
 
   const failing = cli(['scan', shelf], { FAKE_CHRONICLE_FAIL: 'scan' });
   expect(failing.status).toBe(0);

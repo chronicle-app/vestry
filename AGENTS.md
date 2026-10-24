@@ -32,8 +32,10 @@ npm run build
   recoverable publication path in `src/operations.ts`.
 - Run the full test suite before committing. If a test fails only under
   parallel load, raise timeouts in `vitest.config.ts` rather than skipping it.
-- Test errors by behavior, not wording: the exit code, the error's `code`,
-  and that its `hint` names the command it points at.
+- Test what a command did through `--json` and `--events`, never through
+  the text it prints, which changes freely. For errors: the exit code, the
+  error's `code`, and that its `hint` names the command it points at.
+  Printed output is checked only for raw escape codes and color.
 
 ## Output
 

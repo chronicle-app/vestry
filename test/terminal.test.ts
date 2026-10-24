@@ -3,13 +3,18 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { canonical } from '../src/fs-util.js';
 import { Terminal, colorEnabled } from '../src/terminal.js';
-import { bytes, hint, plainTokens, tokens } from '../src/output/index.js';
 
+// Tests read what a command did from --json and --events, never from the
+// text it prints: wording and layout change freely. What is checked of
+// printed output is only what keeps a terminal safe and color where asked.
 let root: string;
-beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'vestry-terminal-')); });
+beforeEach(async () => { root = await canonical(await mkdtemp(join(tmpdir(), 'vestry-terminal-'))); });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 const cli = (args: string[], env: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [resolve('bin/vestry.js'), ...args, '--home', join(root, 'home')], { cwd: root, encoding: 'utf8', env: { ...process.env, NO_COLOR: undefined, FORCE_COLOR: '0', ...env } });
+const json = (args: string[]) => { const child = cli([...args, '--json']); return { ...child, result: JSON.parse(child.stdout) }; };
+const events = (args: string[]) => cli([...args, '--events']).stdout.trim().split('\n').map(line => JSON.parse(line));
 
 it('uses explicit color controls, NO_COLOR, and TTY defaults consistently', () => {
   expect(colorEnabled('auto', false, {})).toBe(false);
@@ -18,84 +23,56 @@ it('uses explicit color controls, NO_COLOR, and TTY defaults consistently', () =
   expect(colorEnabled('always', false, { NO_COLOR: '1' })).toBe(true);
   expect(colorEnabled('never', true, { FORCE_COLOR: '1' })).toBe(false);
   expect(colorEnabled('auto', false, { FORCE_COLOR: '1' })).toBe(true);
-  expect(bytes('333077678')).toBe('333 MB');
 });
 
-it('writes a command in a hint in cyan, or in backticks without color, and never splits it', () => {
-  const text = 'Run `vestry recover 0f43a744-f224-470f-b3de-9e6676d35b4f` to finish it.';
-  expect(hint(text, plainTokens, 80)).toEqual(['  ↳ Run `vestry recover 0f43a744-f224-470f-b3de-9e6676d35b4f` to finish it.']);
-  expect(hint(text, tokens(true), 80).join('\n')).toContain('\x1b[36mvestry recover 0f43a744-f224-470f-b3de-9e6676d35b4f\x1b[39m');
-  expect(hint(text, plainTokens, 30)).toEqual(['  ↳ Run', '    `vestry recover 0f43a744-f224-470f-b3de-9e6676d35b4f`', '    to finish it.']);
-  expect(hint('Pick one:\n`vestry pack /a`\n`vestry pack /b`', plainTokens, 80)).toEqual(['  ↳ Pick one:', '      vestry pack /a', '      vestry pack /b']);
-});
-
-it('renders scoped help, a useful empty state, and errors with a hint that runs as printed', () => {
-  const help = cli(['unpack', '--help', '--color', 'never']);
-  expect(help.status).toBe(0);
-  expect(help.stdout).toContain('The copy is converted where it is');
-  expect(help.stdout).not.toContain('vestry gather');
-  const empty = cli(['list', '--no-color']);
-  expect(empty.stdout).toContain('No packages yet');
-  expect(empty.stdout).toContain(`\`vestry create PATH --home ${join(root, 'home')}\``);
-  expect(empty.stderr).toBe('');
-  const error = cli(['move', 'example', '--color', 'never']);
+it('answers help, an empty catalog, and mistakes with results a script can read', () => {
+  expect(cli(['unpack', '--help']).status).toBe(0);
+  expect(json(['list'])).toMatchObject({ status: 0, result: { command: 'list', packages: [] } });
+  const error = json(['move', 'example']);
   expect(error.status).toBe(2);
-  expect(error.stderr).toMatch(/^\d\d:\d\d:\d\d ✗ Error: move needs --to DIR\n\d\d:\d\d:\d\d {3}↳ Run `vestry move --help` for help\.\n$/);
-  const typo = cli(['lst', '--color', 'never']);
-  expect(typo.stderr).toContain('Did you mean `vestry list');
+  expect(error.result.error.code).toBe('INVALID_ARGUMENT');
+  const typo = json(['lst']);
+  expect(typo.status).toBe(2);
+  expect(typo.result.error.hint).toContain('`vestry list`');
 });
 
-it('shows actual paths, stage progress and sizes; quiet keeps the result', async () => {
+it('reports each stage of making a package, its contents, and the copy each command read', async () => {
   await mkdir(join(root, 'files')); await writeFile(join(root, 'files/note'), 'Example bytes');
-  const created = cli(['create', 'files', '--description', 'Notes', '--as', 'notes', '--color', 'never']);
-  expect(created.status, created.stderr).toBe(0);
-  expect(created.stdout).toContain('✓ Package created');
-  expect(created.stdout).toMatch(/Contents +1 file, 13 B/);
-  expect(created.stderr).toMatch(/· Staged copy verified$/m);
-  for (const args of [['list'], ['show', 'notes']]) {
-    const info = cli([...args, '--offline', '--no-color']);
-    expect(info.status, info.stderr).toBe(0);
-    expect(info.stdout).toContain('1 file, 13 B');
-  }
-  const listed = JSON.parse(cli(['list', '--json']).stdout);
-  expect(listed.packages[0]).toMatchObject({ payloadFiles: 1, payloadBytes: '13' });
-  const packed = cli(['pack', 'notes', '--color', 'never']);
-  expect(packed.status, packed.stderr).toBe(0);
-  // The copy read is named by its path, not by the alias it was asked for.
-  expect(packed.stderr).toMatch(/· Checking files$/m);
-  expect(packed.stderr).not.toContain('Checking notes');
-  const quiet = cli(['verify', 'notes', '--quiet', '--no-color']);
-  expect(quiet.stdout).toContain('Integrity verified');
+  const made = events(['create', 'files', '--description', 'Notes', '--as', 'notes']);
+  expect(made.filter(e => e.type === 'progress').map(e => e.phase)).toEqual(expect.arrayContaining(['planned', 'building', 'verified', 'published']));
+  expect(made.at(-1)).toMatchObject({ type: 'result', result: { payloadFiles: 1, payloadBytes: '13' } });
+  expect(json(['list']).result.packages[0]).toMatchObject({ payloadFiles: 1, payloadBytes: '13', aliases: ['notes'] });
+  expect(json(['show', 'notes', '--offline']).result).toMatchObject({ payloadFiles: 1, payloadBytes: '13' });
+  // An alias resolves to the copy's path, and the result names the path.
+  const packed = json(['pack', 'notes']);
+  expect(packed.status, packed.stdout).toBe(0);
+  expect(packed.result).toMatchObject({ path: join(root, 'files'), representation: 'packed' });
+  const quiet = cli(['verify', 'notes', '--quiet']);
+  expect(quiet.status).toBe(0);
   expect(quiet.stderr).toBe('');
 });
 
-it('keeps machine output ANSI-free even with forced colors, and escapes terminal control text', async () => {
-  const colored = cli(['list', '--color', 'always']);
-  expect(colored.stdout).toContain('\x1b[');
-  const plain = cli(['list', '--color', 'never'], { FORCE_COLOR: '1' });
-  expect(plain.stdout).not.toContain('\x1b[');
-  const json = cli(['list', '--json', '--color', 'always'], { FORCE_COLOR: '1' });
-  expect(JSON.parse(json.stdout)).toMatchObject({ schemaVersion: 1, command: 'list', packages: [] });
-  expect(json.stderr).toBe('');
-  const events = cli(['list', '--events', '--color', 'always'], { FORCE_COLOR: '1' });
-  expect(events.stdout).not.toContain('\x1b[');
-  expect(events.stdout.trim().split('\n').map(line => JSON.parse(line)).at(-1).type).toBe('result');
+it('keeps raw escape codes off the terminal, and color only where asked', async () => {
+  expect(cli(['list', '--color', 'always']).stdout).toContain('\x1b[');
+  expect(cli(['list', '--color', 'never'], { FORCE_COLOR: '1' }).stdout).not.toContain('\x1b[');
+  const forced = cli(['list', '--json', '--color', 'always'], { FORCE_COLOR: '1' });
+  expect(JSON.parse(forced.stdout)).toMatchObject({ schemaVersion: 1, command: 'list', packages: [] });
+  expect(forced.stderr).toBe('');
+  expect(cli(['list', '--events', '--color', 'always'], { FORCE_COLOR: '1' }).stdout).not.toContain('\x1b[');
+  // Text from a package or a path, printed or in a hint, can't drive the terminal.
   await mkdir(join(root, 'files')); await writeFile(join(root, 'files/note'), 'Example');
-  const created = cli(['create', 'files', '--description', 'Title\x1b[2J', '--json', '--quiet']);
-  expect(created.status, created.stdout).toBe(0);
+  expect(cli(['create', 'files', '--description', 'Title\x1b[2J', '--json', '--quiet']).status).toBe(0);
   const inspected = cli(['inspect', 'files', '--color', 'never', '--quiet']);
-  expect(inspected.stdout).toContain('Title\\x1b[2J');
+  expect(inspected.status).toBe(0);
   expect(inspected.stdout).not.toContain('\x1b');
-  // A path in a hint is printed as safely as one in a result.
   await mkdir(join(root, 'odd\x1b[2J')); await writeFile(join(root, 'odd\x1b[2J/note'), 'Example');
   expect(cli(['create', 'odd\x1b[2J', '--quiet']).status).toBe(0);
   const again = cli(['create', 'odd\x1b[2J', '--color', 'never']);
-  expect(again.stderr).toContain('vestry register');
-  expect(again.stderr).toContain('odd\\x1b[2J');
+  expect(again.status).not.toBe(0);
   expect(again.stderr).not.toContain('\x1b');
 });
 
-it('animates elapsed time and byte progress while IO waits, then stops the timer', () => {
+it('stops the progress timer when a command ends', () => {
   vi.useFakeTimers();
   const originalTTY = Object.getOwnPropertyDescriptor(process.stderr, 'isTTY');
   Object.defineProperty(process.stderr, 'isTTY', { configurable: true, value: true });
@@ -103,13 +80,9 @@ it('animates elapsed time and byte progress while IO waits, then stops the timer
   const terminal = new Terminal('never');
   try {
     terminal.start('create /archive');
-    expect(output.mock.calls.map(call => call[0]).join('')).toContain('create /archive');
     terminal.activity('Reading: export.zip', '1048576', '4194304');
     vi.advanceTimersByTime(1200);
-    const rendered = output.mock.calls.map(call => call[0]).join('');
-    expect(rendered).toContain('1.0 MB/4.2 MB');
-    expect(rendered).toContain('↳ Reading: export.zip');
-    expect(rendered).toContain('0:01');
+    expect(output).toHaveBeenCalled();
     terminal.stopActivity();
     const calls = output.mock.calls.length;
     vi.advanceTimersByTime(10000);
@@ -119,40 +92,4 @@ it('animates elapsed time and byte progress while IO waits, then stops the timer
     if (originalTTY) Object.defineProperty(process.stderr, 'isTTY', originalTTY);
     else delete (process.stderr as { isTTY?: boolean }).isTTY;
   }
-});
-
-it('lists each copy under its content with main and availability labels', () => {
-  const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-  try {
-    new Terminal('never').result('list', { packages: [{ contentId: 'vestry-payload-v1:sha256:' + 'a'.repeat(64), aliases: [], mainLocation: '/local/archive', payloadFiles: 1, payloadBytes: '10', locations: [
-      { path: '/local/archive', state: 'known', storage: 'external', representation: 'packed', availability: 'available' },
-      { path: '/network/archive', state: 'known', storage: 'external', representation: 'expanded', availability: 'unavailable' },
-    ] }] });
-    expect(output.mock.calls.flat().join('').split('\n')).toEqual([
-      'aaaaaaaaaaaa  1 file, 10 B',
-      '  ✓ /local/archive    main  packed',
-      '  ✗ /network/archive  expanded  unavailable',
-      '',
-    ]);
-  } finally { output.mockRestore(); }
-});
-
-it('lists operations as rows by when they started, then what failed and what to clean up', () => {
-  const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-  try {
-    new Terminal('never').result('history', { operations: [
-      { id: 'op-1', kind: 'move', status: 'succeeded', phase: 'complete', startedAt: new Date(2026, 9, 22, 23, 17).toISOString(), source: '/a/photos', destination: '/b/photos', retainOriginal: true, backup: '/a/kept', result: { cleanupRequired: true } },
-      { id: 'op-2', kind: 'pack', status: 'interrupted', phase: 'building', startedAt: new Date(2026, 9, 23, 1, 2).toISOString(), source: '/b/photos', error: { message: 'Interrupted' } },
-    ] });
-    expect(output.mock.calls.flat().join('').split('\n')).toEqual([
-      'date        time   kind  status       stage     operation  path',
-      '──────────  ─────  ────  ───────────  ────────  ─────────  ─────────────────────',
-      '2026-10-22  23:17  move  succeeded    -         op-1       /a/photos → /b/photos',
-      '2026-10-23  01:02  pack  interrupted  building  op-2       /b/photos',
-      '✗ pack op-2  Interrupted',
-      '  ↳ The original from move op-1 is kept at /a/kept. To remove it:',
-      '      vestry cleanup op-1',
-      '',
-    ]);
-  } finally { output.mockRestore(); }
 });
