@@ -12,14 +12,18 @@ import { fixture } from './zip-fixture.js';
 // A stand-in for the chronicle command: it logs each call and answers as
 // Chronicle's JSON does, finding one export it reads, one it can't, and one
 // above the payload, which Vestry must not keep. FAKE_CHRONICLE_ROWS is what
-// scan finds instead, and FAKE_CHRONICLE_FAIL names a command that fails.
+// scan finds instead, FAKE_CHRONICLE_FAIL names a command that fails, and
+// FAKE_CHRONICLE_OLD answers as a Chronicle from before scan and survey.
 const fake = `#!/usr/bin/env node
 const { appendFileSync, existsSync } = require('node:fs');
 const { dirname } = require('node:path');
 const args = process.argv.slice(2), value = flag => args[args.indexOf(flag) + 1];
 appendFileSync(process.env.FAKE_CHRONICLE_LOG, JSON.stringify(args) + '\\n');
 if (args[0] === '--version') console.log('@chronicle.app/cli/9.9.9 test');
-else if (process.env.FAKE_CHRONICLE_FAIL === args[0] || args[0] === 'survey' && !existsSync(value('--input').split('/data.zip/')[0])) {
+else if (process.env.FAKE_CHRONICLE_OLD) {
+  console.error(JSON.stringify({ level: 'error', message: 'Unknown command', error: { code: 'unknown-command', exitCode: 2 }, hint: { action: 'Run \`chronicle --help\` to see the commands.' } }));
+  process.exit(2);
+} else if (process.env.FAKE_CHRONICLE_FAIL === args[0] || args[0] === 'survey' && !existsSync(value('--input').split('/data.zip/')[0])) {
   console.error(JSON.stringify({ level: 'error', message: 'Nothing at ' + (value('--input') ?? args[1]), hint: { action: 'Run \`chronicle survey notes --help\` to see what it reads.' } }));
   process.exit(2);
 } else if (args[0] === 'scan' && process.env.FAKE_CHRONICLE_ROWS) console.log(process.env.FAKE_CHRONICLE_ROWS);
@@ -94,6 +98,9 @@ it('says when Chronicle is missing, and records what it could not count', async 
   const missing = spawnSync(process.execPath, ['bin/vestry.js', 'survey', source, '--home', context.home!, '--json'], { encoding: 'utf8', env: { ...process.env, PATH: join(root, 'empty') } });
   expect(missing.status).toBe(4);
   expect(JSON.parse(missing.stdout).error).toMatchObject({ code: 'CHRONICLE_UNAVAILABLE', hint: expect.stringContaining('npm install -g @chronicle.app/cli') });
+  const old = cli(['survey', source], { FAKE_CHRONICLE_OLD: '1' });
+  expect(old.status).toBe(4);
+  expect(old.result.error).toMatchObject({ code: 'CHRONICLE_OUTDATED', hint: expect.stringContaining('npm install -g @chronicle.app/cli') });
   const failing = cli(['survey', source], { FAKE_CHRONICLE_FAIL: 'survey' });
   expect(failing.status).toBe(1);
   expect(failing.result.readers[0]).toMatchObject({ source: 'notes', outcome: 'failed', reason: expect.stringMatching(/^Nothing at .*chronicle survey notes --help/) });
@@ -151,4 +158,8 @@ it('lists the exports Chronicle recognizes outside packages when scanning a fold
   expect(without.status).toBe(0);
   expect(JSON.parse(without.stdout)).not.toHaveProperty('exports');
   expect(JSON.parse(without.stdout)).not.toHaveProperty('warnings');
+  const old = cli(['scan', shelf], { FAKE_CHRONICLE_OLD: '1' });
+  expect(old.status).toBe(0);
+  expect(old.result).not.toHaveProperty('exports');
+  expect(old.result).not.toHaveProperty('warnings');
 });

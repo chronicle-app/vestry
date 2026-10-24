@@ -12,9 +12,13 @@ export interface SurveyRow { source: string; strategy: string; status?: string; 
 const install = 'Install it with `npm install -g @chronicle.app/cli`, then try again.';
 const kebab = (key: string) => key.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`);
 
-/** The last error Chronicle logged as JSON, with its hint, or its last line of output. */
-function failure(stderr: string): VestryError {
+/**
+ * The last error Chronicle logged as JSON, with its hint, or its last line of
+ * output. A Chronicle from before scan and survey doesn't know the command.
+ */
+function failure(stderr: string, command: string): VestryError {
   const logged = stderr.split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }).filter(entry => entry?.level === 'error').at(-1);
+  if (logged?.error?.code === 'unknown-command') return new VestryError('CHRONICLE_OUTDATED', `This Chronicle has no ${command} command`, 4, {}, 'Update it with `npm install -g @chronicle.app/cli`, then try again.');
   const message = logged?.message ?? (stderr.trim().split('\n').at(-1) || 'Chronicle failed without a message.');
   return new VestryError('CHRONICLE_FAILED', message, 6, logged?.error ? { chronicle: logged.error } : {}, logged?.hint?.action);
 }
@@ -25,7 +29,7 @@ function run(args: string[], signal?: AbortSignal): Promise<string> {
     child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
     child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
     child.on('error', error => reject((error as NodeJS.ErrnoException).code === 'ENOENT' ? new VestryError('CHRONICLE_UNAVAILABLE', 'Chronicle isn\'t installed', 4, {}, install) : error));
-    child.on('close', code => code === 0 ? resolve(stdout) : reject(failure(stderr)));
+    child.on('close', code => code === 0 ? resolve(stdout) : reject(failure(stderr, args[0])));
   });
 }
 function parse<T>(stdout: string): T {

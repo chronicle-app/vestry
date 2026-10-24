@@ -119,7 +119,7 @@ export async function scanDirectory(input: string, context: Context & { makeMain
     for (const copy of copies) { copy.mainLocation = main; copy.mainAction ??= 'unchanged'; }
   }
   // Exports outside packages are what could be packaged next. Chronicle is
-  // optional: without it, scan finds packages only.
+  // optional: without it, or with one from before scan, scan finds packages only.
   let exports: Unpackaged[] | undefined;
   if (context.exports) {
     context.onActivity?.('Looking for exports outside packages with Chronicle…');
@@ -127,7 +127,7 @@ export async function scanDirectory(input: string, context: Context & { makeMain
     catch (error) {
       const failure = diagnostic(context.signal?.aborted ? context.signal.reason : error);
       if (failure.code === 'CHRONICLE_FAILED') warnings.push(`Chronicle could not look for exports outside packages. ${[failure.message, failure.hint].filter(Boolean).join('. ')}`);
-      else if (failure.code !== 'CHRONICLE_UNAVAILABLE') throw failure;
+      else if (!['CHRONICLE_UNAVAILABLE', 'CHRONICLE_OUTDATED'].includes(failure.code)) throw failure;
     }
   }
   return { status: issues.length ? 'complete-with-issues' : 'complete', root, findings, issues, skipped, ...(exports && { exports }), ...(warnings.length && { warnings }),
