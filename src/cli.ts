@@ -76,7 +76,8 @@ and retains the original in a recovery folder until cleanup OPERATION-ID.
 move REF --to DIR is a compatibility spelling of mv. Destinations must be new directories with existing parents.
 register --main designates an existing verified copy as main without moving files.
 forget removes a package's registration and all aliases, keeping files and history.
-scan discovers and verifies packages below a directory, stopping at each package.
+scan discovers and verifies packages below a directory, stopping at each package,
+and lists the exports Chronicle recognizes outside them, if chronicle is installed.
 --make-main adopts unique discovered copies. Duplicate copies require a choice.
 gather and create --from-draft retain sources. A gathered folder retains its top-level name.
 Use describe --edit with $EDITOR, or --readme FILE, or --description TEXT.
@@ -231,13 +232,13 @@ export async function main(args: string[]): Promise<number> {
       return 0;
     }
     if (events && !values.quiet) emit('progress', { command, phase: 'started' });
-    else if (!json && !events && !values.quiet && !['list', 'locate', 'history'].includes(command)) terminal.start(command === 'cache' ? `cache ${inputs[0]}` : command, command === 'cache' ? inputs[1] : inputs[0], inPlace ? 'In place · selected copy' : values.output ? 'New copy · source retained' : undefined);
+    else if (!json && !events && !values.quiet && !['list', 'locate', 'history'].includes(command)) terminal.start(command === 'cache' ? `cache ${inputs[0]}` : command, command === 'cache' ? inputs[1] : inputs[0], inPlace ? 'In place · selected copy' : values.output ? 'New copy · source retained' : undefined, command !== 'survey');
     let result: Record<string, unknown>;
     switch (command) {
       case 'edit': result = await editMetadata(inputs[0], { ...(values.title !== undefined ? { title: values.title } : {}), ...(values.description !== undefined ? { description: values.description } : {}), ...(values.notes !== undefined ? { notes: await readFile(resolve(values.notes), 'utf8') } : {}) }, context); break;
       case 'create': result = values['from-draft'] ? await sealDraft(source!, values.output!, { ...context, packed: values.packed, catalogOnly: true }) : await createPackage(source!, { ...context, description: values.description, readme: values.readme, packed: values.packed, alias: values.as, output: values.output, restart: values.restart, zipContents: values['zip-contents'], keepZip: values['keep-zip'] }); break;
       case 'list': result = await listPackages(context); break;
-      case 'scan': result = await scanDirectory(source!, { ...context, makeMain: values['make-main'], onFound: finding => {
+      case 'scan': result = await scanDirectory(source!, { ...context, makeMain: values['make-main'], exports: true, onFound: finding => {
         if (events && !values.quiet) emit('progress', { command, phase: 'discovered', ...finding });
         else if (!json && !events && !values.quiet) terminal.found(finding.path, finding.discovery);
       } }); break;

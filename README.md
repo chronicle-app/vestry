@@ -58,10 +58,11 @@ vestry check photos19
 
 **Count what's inside.** `survey` asks [Chronicle](#chronicle) which exports a
 package holds and how many records each has, over which years. It needs the
-`chronicle` command; nothing in the package changes.
+`chronicle` command; nothing in the package changes. With it installed, `scan`
+also lists the exports outside any package.
 
 ```sh
-vestry survey photos19    # each export's record types, counts, and years
+vestry survey photos19    # a row per record type: count, first and last dates
 vestry show photos19      # readers and the latest survey
 ```
 
@@ -125,7 +126,7 @@ operations resume with `vestry recover`.
 | `edit PACKAGE` | Update title, description, or notes without changing package bytes |
 | `check PACKAGE` | Read the selected copy and verify its integrity |
 | `survey PACKAGE` | Count the records in each export inside, using Chronicle |
-| `scan DIR` | Find and verify packages in a directory tree, then register their locations |
+| `scan DIR` | Find and verify packages in a directory tree, register their locations, and list exports not yet packaged |
 | `pack PACKAGE` | Replace `data/` with `data.zip` in place; identity unchanged |
 | `unpack PACKAGE` | Replace `data.zip` with `data/` in place; identity unchanged |
 | `cp PACKAGE DESTINATION` | Copy to a new package path, verify the copy, keep the original |

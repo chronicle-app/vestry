@@ -4,6 +4,7 @@ import { canonical, exists, within } from './fs-util.js';
 import { diagnostic, usage } from './errors.js';
 import { homePath, listOperations, retireAbandoned, type Context } from './operations.js';
 import { cacheRoot } from './cache.js';
+import { scanExports } from './chronicle.js';
 import { adoptMain } from './locations.js';
 import { readRegistry, rememberVerified, withReference } from './registry.js';
 import { verifyRecorded } from './workflow.js';
@@ -16,8 +17,22 @@ interface Finding {
   mainAction?: 'set' | 'unchanged' | 'ambiguous'; operationId: string;
 }
 interface Issue { path: string; code: string; message: string; exitCode: number; operationId?: unknown; candidates?: string[] }
+/** An export Chronicle recognizes outside any package: a folder or ZIP that could become one. */
+interface Unpackaged { path: string; root: string; source: string; strategy: string; plugin: string; status: string }
 
-export async function scanDirectory(input: string, context: Context & { makeMain?: boolean; offline?: boolean; onFound?: (finding: Finding) => void } = {}): Promise<Record<string, unknown>> {
+/**
+ * The exports Chronicle finds below root that no package holds. `path` is what
+ * create would take: the export's folder, or the ZIP it is in.
+ */
+async function unpackaged(root: string, boundaries: string[], signal?: AbortSignal): Promise<Unpackaged[]> {
+  return (await scanExports(root, signal)).flatMap(row => {
+    // Chronicle looks above a folder that holds no export, for the export it is in.
+    if (!row.root || !within(row.root, root) || boundaries.some(boundary => within(row.root!, boundary))) return [];
+    return [{ path: /^(.*?\.zip)(?=\/)/i.exec(row.root)?.[1] ?? row.root, root: row.root, source: row.source, strategy: row.strategy, plugin: row.plugin, status: row.status }];
+  });
+}
+
+export async function scanDirectory(input: string, context: Context & { makeMain?: boolean; offline?: boolean; exports?: boolean; onFound?: (finding: Finding) => void } = {}): Promise<Record<string, unknown>> {
   if (!(await lstat(resolve(input))).isDirectory()) throw usage('scan requires a regular directory; symlink roots are not followed.');
   const root = await canonical(input);
   for (let parent = dirname(root); parent !== dirname(parent); parent = dirname(parent)) {
@@ -27,7 +42,7 @@ export async function scanDirectory(input: string, context: Context & { makeMain
   const before = await readRegistry(context);
   for (const op of await listOperations(context)) if ([op.source, op.destination].some(p => p && within(p, root))) await retireAbandoned(op.id, context);
   const pending = (await listOperations(context)).filter(op => !['succeeded', 'discarded'].includes(op.status) && (op.inPlace || ['create', 'move', 'copy', 'eject', 'cache-copy', 'import-zip', 'gather'].includes(op.kind)));
-  const findings: Finding[] = [], issues: Issue[] = [], skipped: { path: string; reason: string }[] = [];
+  const findings: Finding[] = [], issues: Issue[] = [], skipped: { path: string; reason: string }[] = [], packages: string[] = [], warnings: string[] = [];
   let directories = 0, candidates = 0;
   function issue(path: string, error: unknown) {
     context.signal?.throwIfAborted();
@@ -46,7 +61,7 @@ export async function scanDirectory(input: string, context: Context & { makeMain
       if (entries.some(entry => entry.name === '.vestry-draft.json')) { skipped.push({ path, reason: 'Editable draft' }); continue; }
       if (pending.some(op => [op.source, op.destination, op.staging, op.backup].some(p => p && within(path, p)))) { skipped.push({ path, reason: 'Unfinished operation; recover it before scanning' }); continue; }
       if (entries.some(entry => entry.name === 'bagit.txt')) {
-        candidates++;
+        candidates++; packages.push(path);
         // A candidate is a boundary even when validation fails. Never reinterpret
         // its preserved payload as independent packages.
         try {
@@ -103,7 +118,19 @@ export async function scanDirectory(input: string, context: Context & { makeMain
     const main = Object.values((await readRegistry(context)).packages).find(r => r.payloadDigest === id && r.mainLocation)?.mainLocation ?? null;
     for (const copy of copies) { copy.mainLocation = main; copy.mainAction ??= 'unchanged'; }
   }
-  return { status: issues.length ? 'complete-with-issues' : 'complete', root, findings, issues, skipped,
+  // Exports outside packages are what could be packaged next. Chronicle is
+  // optional: without it, scan finds packages only.
+  let exports: Unpackaged[] | undefined;
+  if (context.exports) {
+    context.onActivity?.('Looking for exports outside packages with Chronicle…');
+    try { exports = await unpackaged(root, [...packages, ...skipped.map(skip => skip.path), ...excluded], context.signal); }
+    catch (error) {
+      const failure = diagnostic(context.signal?.aborted ? context.signal.reason : error);
+      if (failure.code === 'CHRONICLE_FAILED') warnings.push(`Chronicle could not look for exports outside packages. ${failure.message}`);
+      else if (failure.code !== 'CHRONICLE_UNAVAILABLE') throw failure;
+    }
+  }
+  return { status: issues.length ? 'complete-with-issues' : 'complete', root, findings, issues, skipped, ...(exports && { exports }), ...(warnings.length && { warnings }),
     summary: { directories, candidates, verified: findings.length, packages: groups.size,
       newPackages: [...groups.keys()].filter(id => !Object.values(before.packages).some(r => r.payloadDigest === id)).length,
       possibleMoves: findings.filter(f => f.discovery === 'possible-move').length,
