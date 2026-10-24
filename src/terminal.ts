@@ -64,8 +64,9 @@ function title(command: string, result: Result, subcommand?: string): string {
   const titles: Record<string, string> = {
     eject: 'Package ejected', edit: 'Catalog updated', check: 'Integrity verified', verify: 'Integrity verified', inspect: 'Integrity verified',
     cp: 'Package copied', mv: 'Package moved', move: 'Package moved', cleanup: 'Recovery copy removed', create: 'Package created', seal: 'Package sealed',
-    pack: 'Package packed', unpack: 'Package unpacked', register: 'Package registered', forget: 'Package forgotten', gather: 'Draft created', describe: 'Description updated',
+    pack: 'Package packed', unpack: 'Package unpacked', register: 'Package registered', gather: 'Draft created', describe: 'Description updated',
   };
+  if (command === 'forget') return result.forgot === 'copy' ? 'Copy forgotten' : 'Package forgotten';
   return titles[command] ?? 'Done';
 }
 
@@ -421,9 +422,17 @@ export class Terminal {
     ];
     out.push(...card(entries.filter((entry): entry is [string, string] => !!entry[1]), t, width, 2));
     if (result.message) out.push(...paragraph(this.next(clean(result.message)), t, width, 2));
+    if (result.mainCleared) out.push(...this.hint(result.nextMain ? `It was the main copy. Run \`vestry register ${pathArg(result.nextMain)} --main\` to make another one the main copy.`
+      : 'It was the main copy. Run `vestry register PATH --main` to pick another.'));
     if (result.cleanupRequired) out.push(...this.hint(`The original still takes up space. Once you've checked ${command === 'eject' ? 'the restored files' : 'the new copy'}, run \`vestry cleanup ${clean(result.operationId)}\` to remove it.`));
     if (described && contents(result) === undefined) out.push(...this.hint(`Run \`vestry check ${shortId(result.contentId)}\` to record its contents.`));
-    if (result.locations?.length) out.push(...this.section('Copies', this.copies(result.locations, result.mainLocation, t, { checked: true })));
+    if (result.locations?.length) {
+      out.push(...this.section('Copies', this.copies(result.locations, result.mainLocation, t, { checked: true })));
+      // Missing may only mean a drive isn't connected, so the hint says when to act on it.
+      const gone = (result.locations as Result[]).filter(l => l.availability === 'unavailable' && l.storage === 'external' && l.state !== 'evicted');
+      if (gone.length && lookup) out.push(...this.hint(gone.length === 1 ? `If ${where(gone[0].path)} is gone for good, run \`vestry forget ${pathArg(gone[0].path)}\` to forget that copy.`
+        : ['To forget a copy that\'s gone for good:', ...gone.map(l => `\`vestry forget ${pathArg(l.path)}\``)].join('\n')));
+    }
     if (result.metadata) {
       out.push(...this.section('Catalog', card((['title', 'description', 'notes'] as const).filter(key => result.metadata[key])
         .map(key => [key[0].toUpperCase() + key.slice(1), clean(String(result.metadata[key]).trimEnd())] as [string, string]), t, width, 2)));

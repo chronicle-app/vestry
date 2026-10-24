@@ -109,8 +109,11 @@ export const COMMANDS: Record<string, CommandHelp> = {
     flags: [['--keep-zip', undefined, 'Restore data.zip as it is, under its original name, or payload.zip']],
   },
   forget: {
-    summary: 'Remove a package and its aliases from the catalog',
-    details: ['Its files, cached copies, and history stay.'],
+    summary: 'Remove a package, or one of its copies, from the catalog',
+    details: [
+      'A path forgets just that copy, as when its drive is gone, unless it\'s the package\'s last copy. An alias or a Content ID forgets the package and its aliases.',
+      'Nothing on disk changes: files, cached copies, and history stay.',
+    ],
   },
   cleanup: {
     summary: 'Remove the original that a move or eject kept',

@@ -12,6 +12,7 @@ import { digest, walk } from '../src/inventory.js';
 import { listOperations, recover, type Context } from '../src/operations.js';
 import { forgetPackage, locate, readRegistry, releaseRegistryLock, rememberVerified, resolveIdentity, resolveReference, withReference } from '../src/registry.js';
 import { cacheCopy, cacheEvict, cacheList, managedPath } from '../src/cache.js';
+import { copyArchive } from '../src/locations.js';
 
 let root: string, archive: string, draft: string, id: string, context: Context;
 beforeEach(async () => {
@@ -46,6 +47,24 @@ it('forgets unavailable paths and digest prefixes without verifying package cont
   await writeFile(join(root, 'away', 'README.txt'), 'Changed bytes');
   await forgetPackage(id.split(':').at(-1)!.slice(0, 12), context);
   expect((await readRegistry(context)).packages).toEqual({});
+});
+
+it('forgets one copy by its path, keeping the package, and says how to pick another main copy', async () => {
+  await alias();
+  const second = join(root, 'second'), third = join(root, 'third');
+  await copyArchive(archive, second, context); await copyArchive(archive, third, context);
+  expect((await readRegistry(context)).packages[id].mainLocation).toBe(archive);
+  await rename(second, join(root, 'gone'));
+  expect(await forgetPackage(second, context)).toMatchObject({ forgot: 'copy', locationsRemoved: [second], copiesLeft: 2 });
+  expect((await readRegistry(context)).packages[id].locations.map(l => l.path).sort()).toEqual([archive, third]);
+  expect((await readRegistry(context)).aliases.example).toBe(id);
+  const main = spawnSync(process.execPath, ['bin/vestry.js', 'forget', archive, '--home', context.home!, '--json'], { encoding: 'utf8' });
+  expect(main.status, main.stderr).toBe(0);
+  expect(JSON.parse(main.stdout)).toMatchObject({ command: 'forget', forgot: 'copy', path: archive, mainCleared: true, nextMain: third });
+  expect((await readRegistry(context)).packages[id]).toMatchObject({ mainLocation: null, locations: [expect.objectContaining({ path: third })] });
+  expect(await forgetPackage(third, context)).toMatchObject({ forgot: 'package', aliasesRemoved: ['example'] });
+  expect((await readRegistry(context)).packages).toEqual({});
+  expect((await verify(archive)).packageDigest).toBe(id);
 });
 
 it('refuses forgetting active readers or unknown references without losing registration', async () => {

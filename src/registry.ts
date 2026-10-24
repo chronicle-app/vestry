@@ -290,7 +290,8 @@ export async function forgetPackage(ref: string, context: Context = {}): Promise
   return mutateRegistry(context, [], async state => {
     const known = Object.values(state.packages).find(p => p.locations.some(l => l.path === path || l.path === candidate));
     let id: string;
-    if (explicit || known && !Object.hasOwn(state.aliases, ref)) {
+    const byPath = explicit || !!known && !Object.hasOwn(state.aliases, ref);
+    if (byPath) {
       if (!known) {
         const { listOperations } = await import('./operations.js');
         const unfinished = (await listOperations(context)).find(op => op.source === candidate && ['create', 'import-zip'].includes(op.kind) && !['succeeded', 'discarded'].includes(op.status));
@@ -303,10 +304,32 @@ export async function forgetPackage(ref: string, context: Context = {}): Promise
     const variantIds = variants.map(r => r.packageDigest);
     const overlaps = (path: string) => variants.flatMap(r => r.locations).some(l => overlapping(l.path, path));
     if (variantIds.some(id => state.mutations[id]) || state.leases.some(l => variantIds.includes(l.digest ?? '') || overlaps(l.path)) || state.pathMutations?.some(h => overlaps(h.path))) throw conflict('Another operation is using this package', 'Try again once it finishes.');
+    // A path names one copy: forget just that one, as when its drive is gone,
+    // unless it's the package's last.
+    const copy = byPath ? record.locations.find(l => (l.path === path || l.path === candidate) && l.state !== 'evicted') : undefined;
+    const others = variants.flatMap(r => r.locations).filter(l => l.state !== 'evicted' && l !== copy);
+    if (copy && others.length) {
+      if (copy.storage !== 'external') throw conflict(`${copy.path} is a copy in the cache`, `Run \`vestry cache ${copy.storage === 'pinned' ? 'unpin' : 'evict'} ${pathArg(copy.path)}\` to remove it.`);
+      record.locations = record.locations.filter(l => l !== copy);
+      const wasMain = record.mainLocation === copy.path;
+      if (wasMain) record.mainLocation = null;
+      // A version left with no copies goes; its aliases and catalog details pass to one that has copies.
+      if (!record.locations.some(l => l.state !== 'evicted')) {
+        const heir = variants.find(r => r !== record && r.locations.some(l => l.state !== 'evicted'))!;
+        for (const alias of Object.keys(state.aliases)) if (state.aliases[alias] === record.packageDigest) state.aliases[alias] = heir.packageDigest;
+        heir.metadata ??= record.metadata;
+        delete state.packages[record.packageDigest];
+      }
+      let nextMain: string | undefined;
+      for (const location of others) if (location.storage === 'external' && !nextMain && await exists(location.path)) nextMain = location.path;
+      return { status: 'forgotten', forgot: 'copy', path: copy.path, contentId: record.payloadDigest, packageDigest: id, payloadDigest: record.payloadDigest,
+        aliasesRemoved: [], locationsRemoved: [copy.path], copiesLeft: others.length, ...(wasMain && { mainCleared: true, ...(nextMain && { nextMain }) }),
+        message: `Nothing on disk changed. ${others.length === 1 ? 'Its other copy stays' : `Its ${others.length} other copies stay`}.` };
+    }
     const aliases = Object.keys(state.aliases).filter(alias => variantIds.includes(state.aliases[alias]));
     for (const alias of aliases) delete state.aliases[alias];
     for (const variantId of variantIds) delete state.packages[variantId];
-    return { status: 'forgotten', contentId: record.payloadDigest, packageDigest: id, payloadDigest: record.payloadDigest,
+    return { status: 'forgotten', forgot: 'package', contentId: record.payloadDigest, packageDigest: id, payloadDigest: record.payloadDigest,
       aliasesRemoved: aliases, locationsRemoved: variants.flatMap(r => r.locations.map(l => l.path)),
       message: 'Its files, cached copies, and history stay.' };
   });

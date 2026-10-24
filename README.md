@@ -132,7 +132,7 @@ operations resume with `vestry recover`.
 | `cp PACKAGE DESTINATION` | Copy to a new package path, verify the copy, keep the original |
 | `mv PACKAGE DESTINATION` | Relocate; the original stays in a recovery folder until `cleanup` |
 | `eject PACKAGE` | Restore payload files to the package folder, retaining the package for recovery |
-| `forget PACKAGE` | Remove registration and aliases; files, managed copies, and history are kept |
+| `forget PACKAGE` | Remove a package from the catalog, or with a path, just that copy; files and history are kept |
 
 `PACKAGE` is a path, a full digest, or an unambiguous digest prefix. Aliases
 also work. When several copies are available you choose interactively, or pass

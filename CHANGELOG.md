@@ -8,6 +8,7 @@
 - `show` lists a package's readers and its latest survey
 - Output looks and reads like Chronicle's: a `✓` or `✗` summary line, notices stamped with the time, `✗ Error:` with a `↳` hint that names a command to run, commands in cyan (in backticks without color), and a live progress line at a terminal. Errors in `--json` carry the hint as `hint`
 - An ambiguous package names a command to run for each copy, and a mistyped command suggests the one you meant
+- `forget PATH` forgets just that copy, as when its drive is gone, rather than the whole package; a package's last copy still forgets the package. `show` suggests it for a copy that's missing
 
 ## 0.1.0
 

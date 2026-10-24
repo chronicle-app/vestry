@@ -39,6 +39,7 @@ Usage:
   vestry edit PACKAGE [--title TEXT] [--description TEXT] [--notes FILE]
   vestry register PATH [--as NAME] [--main]
   vestry forget PACKAGE
+  vestry forget PATH
   vestry locate REF
   vestry inspect REF
   vestry verify REF
