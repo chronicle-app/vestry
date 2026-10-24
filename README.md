@@ -56,6 +56,16 @@ vestry show photos19                         # description and all known copies
 vestry check photos19
 ```
 
+**Count what's inside.** `survey` asks [Chronicle](#chronicle) which exports a
+package holds and how many records each has, over which years. It needs the
+`chronicle` command; nothing in the package changes. With it installed, `scan`
+also lists the exports outside any package.
+
+```sh
+vestry survey photos19    # a row per record type: count, first and last dates
+vestry show photos19      # readers and the latest survey
+```
+
 **Keep a second copy, and move things around.** `cp` writes a verified copy
 and registers it. `mv` relocates a package but keeps the original in a
 recovery folder until you run the `cleanup` command it prints. `scan` re-finds
@@ -115,13 +125,14 @@ operations resume with `vestry recover`.
 | `show PACKAGE` | Show description and all known copies; does not check integrity |
 | `edit PACKAGE` | Update title, description, or notes without changing package bytes |
 | `check PACKAGE` | Read the selected copy and verify its integrity |
-| `scan DIR` | Find and verify packages in a directory tree, then register their locations |
+| `survey PACKAGE` | Count the records in each export inside, using Chronicle |
+| `scan DIR` | Find and verify packages in a directory tree, register their locations, and list exports not yet packaged |
 | `pack PACKAGE` | Replace `data/` with `data.zip` in place; identity unchanged |
 | `unpack PACKAGE` | Replace `data.zip` with `data/` in place; identity unchanged |
 | `cp PACKAGE DESTINATION` | Copy to a new package path, verify the copy, keep the original |
 | `mv PACKAGE DESTINATION` | Relocate; the original stays in a recovery folder until `cleanup` |
 | `eject PACKAGE` | Restore payload files to the package folder, retaining the package for recovery |
-| `forget PACKAGE` | Remove registration and aliases; files, managed copies, and history are kept |
+| `forget PACKAGE` | Remove a package from the catalog, or with a path, just that copy; files and history are kept |
 
 `PACKAGE` is a path, a full digest, or an unambiguous digest prefix. Aliases
 also work. When several copies are available you choose interactively, or pass
@@ -167,17 +178,20 @@ Where Vestry differs:
 Vestry is the intake layer for [Chronicle](https://chronicle.app)
 ([source](https://github.com/chronicle-app/chronicle/)), which turns personal
 data exports into a searchable, connected history. Each works without the
-other; the roadmap below covers how they connect.
+other. `vestry survey` runs Chronicle to find the exports in a package and the
+source that reads each, then keeps those readers in the catalog by Content ID,
+so they serve every copy. Install it with `npm install -g @chronicle.app/cli`.
 
 ## Roadmap
 
 **Today.** Create packages from folders and ZIPs, verify them, keep copies on
-several disks, describe them, and find them again after reorganizing.
+several disks, describe them, and find them again after reorganizing. Survey
+the records in a package's exports with Chronicle; each survey is dated and
+kept in the catalog.
 
-**Next.** Survey. Look inside an export before packaging it: list what it
-contains, which formats are present, and what looks damaged or has names that
-will not survive a filesystem. Reports are dated and kept in the catalog, so
-you can tell what you knew about a file and when.
+**Next.** Survey files as well as records: which formats are present, and what
+looks damaged or has names that will not survive a filesystem. Look inside an
+export before packaging it.
 
 **Later.** Processing. Attach code to a package and run it against a verified
 copy. Vestry records each run and its outputs but never lets a processor touch

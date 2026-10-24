@@ -141,7 +141,7 @@ it('exposes the default create/list/move flow and manual main selection through 
 it('supports packed in-place creation and refuses replacement from inside the source folder', async () => {
   const cli = spawnSync(process.execPath, [resolve('bin/vestry.js'), 'create', '.', '--description', 'Inside', '--home', context.home!, '--json'], { cwd: source, encoding: 'utf8' });
   expect(cli.status).toBe(2);
-  expect(JSON.parse(cli.stdout).error.message).toContain('outside the source folder');
+  expect(JSON.parse(cli.stdout).error.hint).toContain('outside the folder');
   const result = await createPackage(source, { ...context, description: 'Packed', packed: true });
   expect((await verify(source)).representation).toBe('packed');
   expect(result.payloadFiles).toBe(3);

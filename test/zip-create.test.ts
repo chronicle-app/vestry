@@ -186,7 +186,7 @@ it('refuses publication when the source changes during the streaming copy', asyn
     if (!changed && message === 'Copying and checksumming ZIP' && copied !== '0') {
       changed = true; writeFileSync(source, 'Changed source');
     }
-  } })).rejects.toThrow('changed while copying');
+  } })).rejects.toThrow('changed while it was copied');
   expect(await readFile(source, 'utf8')).toBe('Changed source');
   expect(await exists(destination)).toBe(false);
 });
@@ -205,7 +205,7 @@ it('refuses discard after ZIP relocation and resumes without losing the sole arc
   // Simulate rename succeeding before its relocated checkpoint was persisted.
   op.phase = 'verified'; await save(context.home!, op);
   expect(await exists(source)).toBe(false);
-  await expect(recover(op.id, checkOutput, context, true)).rejects.toThrow('discard cannot remove');
+  await expect(recover(op.id, checkOutput, context, true)).rejects.toThrow('can\'t be thrown away');
   expect(await readFile(join(op.staging!, 'data.zip'))).toEqual(bytes);
   expect(await createPackage(source, context)).toMatchObject({ resumed: true, sourceMoved: true });
   expect(await readFile(join(destination, 'data.zip'))).toEqual(bytes);
