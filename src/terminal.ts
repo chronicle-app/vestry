@@ -30,8 +30,6 @@ const named = (result: Result) => clean(result.aliases?.join(', ') || shortId(re
 const dayOf = (iso: unknown) => iso ? day(new Date(String(iso))) : '-';
 /** A local date and time to the minute, as two cells. */
 const stamp = (iso: unknown) => iso ? date(new Date(String(iso))).split(' ') : ['-', '-'];
-/** A size as one word for a cell, like 4.2MB. */
-const size = (value: unknown) => value === undefined ? '-' : bytes(value as string).replace(' ', '');
 /** A value as one cell, or - for none. */
 const cell = (value: unknown) => clean(value) || '-';
 /** Whether a copy is there, in a word; with --offline, an external copy isn't looked at. */
@@ -40,6 +38,18 @@ const state = (availability: unknown) => availability === 'not-checked-offline' 
 const role = (location: Result, main: unknown) => location.path === main ? 'main' : location.storage && location.storage !== 'external' ? clean(location.storage) : 'copy';
 /** The copies a package still has. */
 const kept = (locations: Result[]) => locations.filter(location => location.state !== 'evicted' && location.availability !== 'evicted');
+/** Paths padded to a column, unless one is so long the rest would trail off after it. */
+const column = (texts: string[]) => {
+  const widest = Math.max(0, ...texts.map(text => text.length));
+  return texts.map(text => widest <= 60 ? text.padEnd(widest) : text);
+};
+/** How a copy's availability looks: its glyph, and a word for anything but available. */
+function availability(value: unknown, t: Tokens): [Segment, ...Segment[]] {
+  if (value === 'available') return [[glyphs.success, t.success]];
+  if (['unavailable', 'changed', 'failed'].includes(String(value))) return [[glyphs.failure, t.danger], [`  ${readable(value)}`, t.danger]];
+  if (value === 'not-checked-offline') return [[glyphs.bullet, t.muted], ['  not checked offline', t.muted]];
+  return [[glyphs.warning, t.warning], [`  ${readable(value)}`, t.warning]];
+}
 /** A measure as one word, like conversations=482 or calls=12h. */
 function measure(m: Result): string {
   const value = Number(m.value), hours = value / 3600;
@@ -336,21 +346,31 @@ export class Terminal {
     return out;
   }
 
-  /** A row per copy, each naming its package: an alias, or the start of its Content ID. */
+  /** Each package on a line, its name and size, with a line under it for each copy. */
   private packages(packages: Result[]): string[] {
+    const t = this.t;
     if (!packages.length) return ['No packages yet', ...this.hint('Run `vestry create PATH` to make one from a folder or ZIP.')];
-    const name = (pkg: Result) => clean(pkg.aliases?.[0] ?? shortId(pkg.contentId ?? pkg.packageDigest));
-    const out = this.rows(['package', 'copy', 'state', 'format', 'files', 'size', 'path'], packages.flatMap(pkg => {
-      const facts = [pkg.payloadFiles === undefined ? '-' : String(pkg.payloadFiles), size(pkg.payloadBytes)], copies = kept(pkg.locations ?? []);
-      return copies.length ? copies.map(location => [name(pkg), role(location, pkg.mainLocation), state(location.availability), cell(location.representation), ...facts, where(location.path)])
-        : [[name(pkg), '-', '-', '-', ...facts, '-']];
-    }), { numeric: ['files', 'size'] });
-    for (const pkg of packages.filter(p => !p.mainLocation)) {
+    return packages.flatMap((pkg, i) => {
       const first = (pkg.locations as Result[] ?? []).find(l => l.availability === 'available' && l.storage === 'external');
-      out.push(...this.hint(first ? `${name(pkg)} has no main copy. Run \`vestry register ${pathArg(first.path)} --main\` to make that copy its main one.`
-        : `${name(pkg)} has no main copy. Run \`vestry register PATH --main\` to pick one.`));
-    }
-    return out;
+      return [
+        ...(i ? [''] : []),
+        line([[named(pkg), t.strong], [pkg.aliases?.length ? `  ${shortId(pkg.contentId ?? pkg.packageDigest)}` : ''], [contents(pkg) ? `  ${contents(pkg)}` : '', t.muted]], Number.POSITIVE_INFINITY),
+        ...this.copyLines(pkg.locations ?? [], pkg.mainLocation, t),
+        ...(pkg.mainLocation ? [] : this.hint(first ? `No main copy. Run \`vestry register ${pathArg(first.path)} --main\` to make this one the main copy.` : 'No main copy. Run `vestry register PATH --main` to pick one.')),
+      ];
+    });
+  }
+
+  /** A copy per line, as list shows them under their package: whether it's there, where, and what kind. */
+  private copyLines(locations: Result[], main: unknown, t: Tokens): string[] {
+    const copies = kept(locations), paths = column(copies.map(location => where(location.path)));
+    const variants = new Set(copies.map(location => location.packageDigest)).size > 1;
+    return copies.map((location, i) => {
+      const [glyph, ...state] = availability(location.availability, t);
+      const labels = [location.path === main ? 'main' : '', clean(location.representation), location.storage && location.storage !== 'external' ? clean(location.storage) : '',
+        variants ? shortId(location.packageDigest) : ''].filter(Boolean);
+      return line([['  '], glyph, [' '], [paths[i]], [labels.length ? `  ${labels.join('  ')}` : '', t.muted], ...state], Number.POSITIVE_INFINITY);
+    });
   }
 
   private operations(command: string, operations: Result[]): string[] {

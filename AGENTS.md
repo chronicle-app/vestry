@@ -51,11 +51,13 @@ codes anywhere else.
 - **A result starts with a summary line**: status glyph, what happened, the
   time it took (`✓ Package created  in 212ms`), then its details as a card.
   A lookup like `show` starts with the package's name instead.
-- **A list is a table**, as Chronicle's are: a row per item under muted
-  headings and a rule, so grep and awk can read it. A cell is one word: `-`
-  for nothing, plain numbers (`1632`), sizes run together (`4.2MB`), dates
-  as `2026-07-15`, and a time in a column of its own. A path goes last and
-  prints whole. Notes about rows, like what failed, go under the table.
+- **Rows of one kind are a table**, as Chronicle's are: operations, copies,
+  readers, record counts. A row per item under muted headings and a rule, so
+  grep and awk can read it. A cell is one word: `-` for nothing, plain
+  numbers (`1632`), dates as `2026-07-15`, and a time in a column of its own.
+  A path goes last and prints whole. Notes about rows, like what failed, go
+  under the table. `list` is the exception: each package on a line, its
+  copies under it.
 - **Errors** read `✗ Error: <message>`, with what to do as a `↳` hint below.
   Throw a `VestryError` (or `usage`, `integrity`, `conflict`) with the hint as
   its last argument; it shows in `--json` errors as `hint` too.
