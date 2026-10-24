@@ -26,35 +26,25 @@ const contents = (result: Result) => result.payloadFiles === undefined ? undefin
   : `${count(Number(result.payloadFiles))} ${plural('files', Number(result.payloadFiles))}, ${bytes(result.payloadBytes)}`;
 /** What a package is called: its aliases, or the start of its Content ID. */
 const named = (result: Result) => clean(result.aliases?.join(', ') || shortId(result.contentId ?? result.payloadDigest ?? result.packageDigest));
-/** Paths padded to a column, unless one is so long the rest would trail off after it. */
-const column = (texts: string[]) => {
-  const widest = Math.max(0, ...texts.map(text => text.length));
-  return texts.map(text => widest <= 60 ? text.padEnd(widest) : text);
-};
-
-/** A local date for a survey cell, like 2026-07-15, or - for none. */
+/** A local date for a cell, like 2026-07-15, or - for none. */
 const dayOf = (iso: unknown) => iso ? day(new Date(String(iso))) : '-';
+/** A local date and time to the minute, as two cells. */
+const stamp = (iso: unknown) => iso ? date(new Date(String(iso))).split(' ') : ['-', '-'];
+/** A size as one word for a cell, like 4.2MB. */
+const size = (value: unknown) => value === undefined ? '-' : bytes(value as string).replace(' ', '');
+/** A value as one cell, or - for none. */
+const cell = (value: unknown) => clean(value) || '-';
+/** Whether a copy is there, in a word; with --offline, an external copy isn't looked at. */
+const state = (availability: unknown) => availability === 'not-checked-offline' ? 'unchecked' : cell(availability);
+/** What a copy is to its package: the main copy, another copy, or one in Vestry's cache. */
+const role = (location: Result, main: unknown) => location.path === main ? 'main' : location.storage && location.storage !== 'external' ? clean(location.storage) : 'copy';
+/** The copies a package still has. */
+const kept = (locations: Result[]) => locations.filter(location => location.state !== 'evicted' && location.availability !== 'evicted');
 /** A measure as one word, like conversations=482 or calls=12h. */
 function measure(m: Result): string {
   const value = Number(m.value), hours = value / 3600;
   const shown = m.unit === 'bytes' ? bytes(value).replace(' ', '') : m.unit === 'seconds' ? (hours >= 1 ? `${Math.round(hours)}h` : `${Math.round(value / 60)}m`) : String(value);
   return `${clean(m.label ?? m.key).replaceAll(' ', '-')}=${shown}`;
-}
-
-/** How a copy's availability looks: its glyph, and a word for anything but available. */
-function availability(value: unknown, t: Tokens): [Segment, ...Segment[]] {
-  if (value === 'available') return [[glyphs.success, t.success]];
-  if (['unavailable', 'changed', 'failed'].includes(String(value))) return [[glyphs.failure, t.danger], [`  ${readable(value)}`, t.danger]];
-  if (value === 'not-checked-offline') return [[glyphs.bullet, t.muted], ['  not checked offline', t.muted]];
-  return [[glyphs.warning, t.warning], [`  ${readable(value)}`, t.warning]];
-}
-
-/** An operation's status as a glyph: done, failed, unfinished, or dropped. */
-function operationStatus(status: unknown, t: Tokens): Segment {
-  if (status === 'succeeded') return [glyphs.success, t.success];
-  if (status === 'failed') return [glyphs.failure, t.danger];
-  if (status === 'discarded') return [glyphs.bullet, t.muted];
-  return [glyphs.warning, t.warning];
 }
 
 /** What a result that reports something done is titled. */
@@ -250,17 +240,27 @@ export class Terminal {
     ]);
   }
 
-  /** A copy per line: whether it's there, where, and what kind. */
-  private copies(locations: Result[], main: unknown, t: Tokens, { checked = false } = {}): string[] {
-    const shown = locations.filter(location => location.state !== 'evicted' && location.availability !== 'evicted');
-    const paths = column(shown.map(location => where(location.path)));
-    const variants = new Set(shown.map(location => location.packageDigest)).size > 1;
-    return shown.map((location, i) => {
-      const [glyph, ...state] = availability(location.availability, t);
-      const labels = [location.path === main ? 'main' : '', clean(location.representation), location.storage && location.storage !== 'external' ? clean(location.storage) : '',
-        checked && location.lastVerifiedAt ? `checked ${when(location.lastVerifiedAt)}` : '', variants ? shortId(location.packageDigest) : ''].filter(Boolean);
-      return line([['  '], glyph, [' '], [paths[i]], [labels.length ? `  ${labels.join('  ')}` : '', t.muted], ...state], Number.POSITIVE_INFINITY);
-    });
+  /**
+   * Rows under muted headings and a rule, a word to a cell and paths last.
+   * Nothing is cut, so grep and awk see every value; the terminal wraps a
+   * row too long for it. The last column's rule stops at the terminal's edge.
+   */
+  private rows(headings: string[], cells: string[][], { numeric = [], muted = [], indent = 0 }: { numeric?: string[]; muted?: string[]; indent?: number } = {}): string[] {
+    if (!cells.length) return [];
+    const { lines } = table({ headings, cells, numeric: headings.map(h => numeric.includes(h)), muted: headings.map(h => muted.includes(h)) }, this.t, Number.POSITIVE_INFINITY);
+    const widths = headings.map((heading, i) => Math.max(heading.length, ...cells.map(row => row[i].length)));
+    const before = widths.slice(0, -1).reduce((sum, w) => sum + w + 2, indent);
+    widths[widths.length - 1] = Math.max(headings.at(-1)!.length, Math.min(widths.at(-1)!, this.width - before));
+    lines[1] = this.t.muted(widths.map(w => glyphs.rule.repeat(w)).join('  '));
+    return lines.map(text => ' '.repeat(indent) + text);
+  }
+
+  /** A row per copy: what it is to the package, whether it's there, its form, and where. */
+  private copies(locations: Result[], main: unknown, _t: Tokens, { checked = false } = {}): string[] {
+    const copies = kept(locations), variants = new Set(copies.map(location => location.packageDigest)).size > 1;
+    const headings = ['copy', 'state', 'format', ...(checked ? ['checked'] : []), ...(variants ? ['digest'] : []), 'path'];
+    return this.rows(headings, copies.map(location => [role(location, main), state(location.availability), cell(location.representation),
+      ...(checked ? [dayOf(location.lastVerifiedAt)] : []), ...(variants ? [shortId(location.packageDigest)] : []), where(location.path)]), { muted: ['checked'], indent: 2 });
   }
 
   /**
@@ -318,60 +318,54 @@ export class Terminal {
     out.push(...rows.map(([n, label, style]) => line([['  '], [count(n).padStart(digits), style ?? t.strong], [' '], [label, style]], this.width)));
     if (!s.candidates) out.push(...this.hint('No packages found. Run `vestry create PATH` to make one from a folder or ZIP.'));
     const findings = result.findings as Result[];
-    const paths = column(findings.map(finding => where(finding.path)));
-    out.push(...this.section('Copies', findings.map((finding, i) => line([
-      ['  '], [glyphs.success, t.success], [' '], [paths[i]],
-      [`  ${[readable(finding.discovery), shortId(finding.contentId ?? finding.packageDigest), finding.mainAction === 'set' ? 'made main' : finding.mainLocation === finding.path ? 'main' : ''].filter(Boolean).join('  ')}`, t.muted],
-    ], Number.POSITIVE_INFINITY))));
+    out.push(...this.section('Copies', this.rows(['package', 'found', 'copy', 'path'], findings.map(finding => [shortId(finding.contentId ?? finding.packageDigest), cell(finding.discovery),
+      finding.mainAction === 'set' ? 'made-main' : finding.mainLocation === finding.path ? 'main' : 'copy', where(finding.path)]), { indent: 2 })));
     for (const finding of findings.filter(f => f.discovery === 'possible-move')) {
       out.push(...this.hint(`The main copy at ${where(finding.previousMainLocation)} is missing. It may be on a drive that isn't connected. To make ${where(finding.path)} the main copy: \`vestry register ${pathArg(finding.path)} --main\``));
     }
     if (result.exports?.length) {
       const exports = result.exports as Result[];
-      const found = [...new Set(exports.map(e => e.path as string))];
-      const shown = column(found.map(where));
-      out.push(...this.section('Not in a package', found.map((path, i) => line([['  '], [shown[i]],
-        [`  ${exports.filter(e => e.path === path).map(e => e.status === 'ready' ? clean(e.source) : `${clean(e.source)} ${readable(e.status)}`).join(', ')}`, t.muted]], Number.POSITIVE_INFINITY)),
-      [['  exports Chronicle recognizes', t.muted]]));
-      out.push(...this.hint(`To package one: \`vestry create ${pathArg(found[0])}\``));
+      out.push(...this.section('Not in a package', this.rows(['source', 'status', 'path'], exports.map(e => [cell(e.source), cell(e.status), where(e.path)]), { indent: 2 }),
+        [['  exports Chronicle recognizes', t.muted]]));
+      out.push(...this.hint(`To package one: \`vestry create ${pathArg(exports[0].path)}\``));
     }
     out.push(...this.section('Problems', issues.flatMap(issue => issue.code === 'AMBIGUOUS_MAIN_LOCATION'
       ? [line([['  '], [glyphs.failure, t.danger], [' '], [clean(issue.message)]], Number.POSITIVE_INFINITY), ...this.hint(['Pick the main copy:', ...(issue.candidates as string[]).map(path => `\`vestry register ${pathArg(path)} --main\``)].join('\n'))]
       : [line([['  '], [glyphs.failure, t.danger], [' '], [where(issue.path)], [`  ${clean(issue.message)}`, t.muted]], Number.POSITIVE_INFINITY)])));
-    const skipped = result.skipped as Result[];
-    const skippedPaths = column(skipped.map(skip => where(skip.path)));
-    out.push(...this.section('Skipped', skipped.map((skip, i) => line([['  '], [skippedPaths[i], t.muted], [`  ${clean(skip.reason)}`, t.muted]], Number.POSITIVE_INFINITY))));
+    out.push(...this.section('Skipped', this.rows(['reason', 'path'], (result.skipped as Result[]).map(skip => [cell(skip.reason), where(skip.path)]), { indent: 2 })));
     return out;
   }
 
+  /** A row per copy, each naming its package: an alias, or the start of its Content ID. */
   private packages(packages: Result[]): string[] {
-    const t = this.t;
     if (!packages.length) return ['No packages yet', ...this.hint('Run `vestry create PATH` to make one from a folder or ZIP.')];
-    return packages.flatMap((pkg, i) => {
+    const name = (pkg: Result) => clean(pkg.aliases?.[0] ?? shortId(pkg.contentId ?? pkg.packageDigest));
+    const out = this.rows(['package', 'copy', 'state', 'format', 'files', 'size', 'path'], packages.flatMap(pkg => {
+      const facts = [pkg.payloadFiles === undefined ? '-' : String(pkg.payloadFiles), size(pkg.payloadBytes)], copies = kept(pkg.locations ?? []);
+      return copies.length ? copies.map(location => [name(pkg), role(location, pkg.mainLocation), state(location.availability), cell(location.representation), ...facts, where(location.path)])
+        : [[name(pkg), '-', '-', '-', ...facts, '-']];
+    }), { numeric: ['files', 'size'] });
+    for (const pkg of packages.filter(p => !p.mainLocation)) {
       const first = (pkg.locations as Result[] ?? []).find(l => l.availability === 'available' && l.storage === 'external');
-      return [
-        ...(i ? [''] : []),
-        line([[named(pkg), t.strong], [pkg.aliases?.length ? `  ${shortId(pkg.contentId ?? pkg.packageDigest)}` : ''], [contents(pkg) ? `  ${contents(pkg)}` : '', t.muted]], Number.POSITIVE_INFINITY),
-        ...this.copies(pkg.locations ?? [], pkg.mainLocation, t),
-        ...(pkg.mainLocation ? [] : this.hint(first ? `No main copy. Run \`vestry register ${pathArg(first.path)} --main\` to make this one the main copy.` : 'No main copy. Run `vestry register PATH --main` to pick one.')),
-      ];
-    });
+      out.push(...this.hint(first ? `${name(pkg)} has no main copy. Run \`vestry register ${pathArg(first.path)} --main\` to make that copy its main one.`
+        : `${name(pkg)} has no main copy. Run \`vestry register PATH --main\` to pick one.`));
+    }
+    return out;
   }
 
   private operations(command: string, operations: Result[]): string[] {
     const t = this.t;
     if (!operations.length) return [command === 'recover' ? 'Nothing to recover' : 'No operations recorded'];
-    const kinds = Math.max(...operations.map(op => clean(op.kind).length));
-    const out = operations.flatMap(op => {
-      const unfinished = !['succeeded', 'discarded'].includes(op.status);
-      return [
-        line([operationStatus(op.status, t), [' '], [clean(op.kind).padEnd(kinds), t.strong], [`  ${when(op.startedAt)}`, t.muted], [`  ${clean(op.id)}`],
-          [op.status === 'succeeded' ? '' : `  ${readable(op.status)}${unfinished ? ` at ${readable(op.phase)}` : ''}`, unfinished ? t.warning : t.muted]], Number.POSITIVE_INFINITY),
-        `  ${where(op.source)}${op.destination && op.source !== op.destination ? ` ${glyphs.arrow} ${where(op.destination)}` : ''}`,
-        ...(op.error ? [line([['  Error: ', t.danger], [clean(op.error.message)]], Number.POSITIVE_INFINITY)] : []),
-        ...(op.retainOriginal && !op.sourceRetired && op.result?.cleanupRequired ? this.hint(`The original is kept at ${where(op.backup)}. To remove it: \`vestry cleanup ${clean(op.id)}\``) : []),
-      ];
-    });
+    const unfinished = (op: Result) => !['succeeded', 'discarded'].includes(op.status), staged = operations.some(unfinished);
+    const out = this.rows(['date', 'time', 'kind', 'status', ...(staged ? ['stage'] : []), 'operation', 'path'], operations.map(op => [
+      ...stamp(op.startedAt), cell(op.kind), cell(op.status), ...(staged ? [unfinished(op) ? cell(op.phase) : '-'] : []), cell(op.id),
+      `${where(op.source)}${op.destination && op.source !== op.destination ? ` ${glyphs.arrow} ${where(op.destination)}` : ''}`,
+    ]), { muted: ['date', 'time'] });
+    // What went wrong, then the originals still kept, each under the table.
+    for (const op of operations.filter(op => op.error)) out.push(line([[glyphs.failure, t.danger], [' '], [`${clean(op.kind)} ${clean(op.id)}`, t.strong], [`  ${clean(op.error.message)}`]], Number.POSITIVE_INFINITY));
+    for (const op of operations.filter(op => op.retainOriginal && !op.sourceRetired && op.result?.cleanupRequired)) {
+      out.push(...this.hint(`The original from ${clean(op.kind)} ${clean(op.id)} is kept at ${where(op.backup)}. To remove it: \`vestry cleanup ${clean(op.id)}\``));
+    }
     if (command === 'recover') {
       out.push('', ...this.hint(operations.length === 1 ? `Run \`vestry recover ${clean(operations[0].id)}\` to finish it, or add \`--discard\` to throw its work away.`
         : 'Run `vestry recover OPERATION-ID` to finish one, or add `--discard` to throw its work away.'));
@@ -380,12 +374,8 @@ export class Terminal {
   }
 
   private cached(copies: Result[]): string[] {
-    const t = this.t;
     if (!copies.length) return ['No local copies', ...this.hint('Run `vestry cache add PACKAGE --pin` to keep one for when your archive is offline.')];
-    return copies.flatMap(copy => {
-      const [glyph, ...state] = availability(copy.availability, t);
-      return [line([glyph, [' '], [shortId(copy.contentId), t.strong], [`  ${copy.pinned ? 'pinned' : 'disposable'}  ${clean(copy.representation)}`, t.muted], ...state], Number.POSITIVE_INFINITY), `  ${where(copy.path)}`];
-    });
+    return this.rows(['package', 'storage', 'state', 'format', 'path'], copies.map(copy => [shortId(copy.contentId), copy.pinned ? 'pinned' : 'disposable', state(copy.availability), cell(copy.representation), where(copy.path)]));
   }
 
   /** A package or an operation on one: what happened, then its details. */
@@ -422,9 +412,7 @@ export class Terminal {
       out.push(...this.hint(`Copies have different catalog details. Run \`vestry inspect ${shortId(result.contentId)} --json\` to see them all.`));
     }
     if (result.readers?.length) {
-      const readers = result.readers as Result[];
-      const [sources, roots] = [column(readers.map(r => clean(r.source))), column(readers.map(r => exportRoot(r.root)))];
-      out.push(...this.section('Readers', readers.map((r, i) => line([['  '], [sources[i]], [`  ${roots[i]}  ${readable(r.strategy)}${r.status === 'ready' ? '' : `  ${readable(r.status)}`}`, t.muted]], Number.POSITIVE_INFINITY))));
+      out.push(...this.section('Readers', this.rows(['source', 'strategy', 'status', 'export'], (result.readers as Result[]).map(r => [cell(r.source), cell(r.strategy), cell(r.status), exportRoot(r.root)]), { indent: 2 })));
     }
     if (result.lastSurvey) {
       const { lines, uncounted } = this.surveyTable(result.lastSurvey.readers, t, 2);

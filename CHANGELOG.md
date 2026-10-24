@@ -4,6 +4,7 @@
 
 - `survey` counts the records in each export a package holds, using Chronicle's `chronicle` command, and keeps the readers it finds and each dated survey in the catalog. It prints a row per record type, for grep and awk
 - `scan` lists the exports Chronicle recognizes outside any package, as folders or ZIPs to package next
+- `list`, `history`, `recover`, and `cache list` print a table with a row per copy or operation, as do the copies and readers in `show` and `scan`, for grep and awk
 - `show` lists a package's readers and its latest survey
 - Output looks and reads like Chronicle's: a `✓` or `✗` summary line, notices stamped with the time, `✗ Error:` with a `↳` hint that names a command to run, commands in cyan (in backticks without color), and a live progress line at a terminal. Errors in `--json` carry the hint as `hint`
 - An ambiguous package names a command to run for each copy, and a mistyped command suggests the one you meant

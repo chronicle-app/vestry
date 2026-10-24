@@ -158,7 +158,7 @@ it('lists the exports Chronicle recognizes outside packages when scanning a fold
   expect((await calls()).find(args => args[0] === 'scan')![1]).toBe(shelf);
   const printed = run(['scan', shelf, '--quiet'], { FAKE_CHRONICLE_ROWS: rows }).stdout;
   expect(printed).toContain(`Not in a package`);
-  expect(printed).toMatch(new RegExp(`${join(shelf, 'takeout.zip')} +takeout unsupported`));
+  expect(printed).toMatch(new RegExp(`  takeout +unsupported +${join(shelf, 'takeout.zip')}\n`));
   expect(printed).toContain(`vestry create ${join(shelf, 'loose')}`);
 
   const failing = cli(['scan', shelf], { FAKE_CHRONICLE_FAIL: 'scan' });

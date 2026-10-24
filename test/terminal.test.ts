@@ -52,13 +52,13 @@ it('shows actual paths, stage progress and sizes; quiet keeps the result', async
   expect(created.stdout).toContain('✓ Package created');
   expect(created.stdout).toMatch(/Contents +1 file, 13 B/);
   expect(created.stderr).toMatch(/· Staged copy verified$/m);
-  for (const args of [['list'], ['show', 'notes']]) {
-    const info = cli([...args, '--offline', '--no-color']);
-    expect(info.status, info.stderr).toBe(0);
-    expect(info.stdout).toContain('1 file, 13 B');
-  }
-  const listed = JSON.parse(cli(['list', '--json']).stdout);
-  expect(listed.packages[0]).toMatchObject({ payloadFiles: 1, payloadBytes: '13' });
+  const listed = cli(['list', '--offline', '--no-color']);
+  expect(listed.status, listed.stderr).toBe(0);
+  expect(listed.stdout).toMatch(/^notes +main +unchecked +expanded +1 +13B +/m);
+  const shown = cli(['show', 'notes', '--offline', '--no-color']);
+  expect(shown.status, shown.stderr).toBe(0);
+  expect(shown.stdout).toContain('1 file, 13 B');
+  expect(JSON.parse(cli(['list', '--json']).stdout).packages[0]).toMatchObject({ payloadFiles: 1, payloadBytes: '13' });
   const packed = cli(['pack', 'notes', '--color', 'never']);
   expect(packed.status, packed.stderr).toBe(0);
   // The copy read is named by its path, not by the alias it was asked for.
@@ -121,17 +121,44 @@ it('animates elapsed time and byte progress while IO waits, then stops the timer
   }
 });
 
-it('lists each copy under its content with main and availability labels', () => {
+it('lists a row per copy, a word to a cell, naming its package on each', () => {
   const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   try {
     new Terminal('never').result('list', { packages: [{ contentId: 'vestry-payload-v1:sha256:' + 'a'.repeat(64), aliases: [], mainLocation: '/local/archive', payloadFiles: 1, payloadBytes: '10', locations: [
       { path: '/local/archive', state: 'known', storage: 'external', representation: 'packed', availability: 'available' },
       { path: '/network/archive', state: 'known', storage: 'external', representation: 'expanded', availability: 'unavailable' },
+      { path: '/cache/aaaa', state: 'known', storage: 'pinned', representation: 'packed', availability: 'available' },
+      { path: '/gone/archive', state: 'evicted', storage: 'cache', representation: 'packed', availability: 'evicted' },
+    ] }, { contentId: 'vestry-payload-v1:sha256:' + 'b'.repeat(64), aliases: ['photos'], mainLocation: '/photos', payloadFiles: 1632, payloadBytes: '333077678', locations: [
+      { path: '/photos', state: 'known', storage: 'external', representation: 'expanded', availability: 'available' },
     ] }] });
     expect(output.mock.calls.flat().join('').split('\n')).toEqual([
-      'aaaaaaaaaaaa  1 file, 10 B',
-      '  ✓ /local/archive    main  packed',
-      '  ✗ /network/archive  expanded  unavailable',
+      'package       copy    state        format    files   size  path',
+      '────────────  ──────  ───────────  ────────  ─────  ─────  ────────────────',
+      'aaaaaaaaaaaa  main    available    packed        1    10B  /local/archive',
+      'aaaaaaaaaaaa  copy    unavailable  expanded      1    10B  /network/archive',
+      'aaaaaaaaaaaa  pinned  available    packed        1    10B  /cache/aaaa',
+      'photos        main    available    expanded   1632  333MB  /photos',
+      '',
+    ]);
+  } finally { output.mockRestore(); }
+});
+
+it('lists operations as rows by when they started, then what failed and what to clean up', () => {
+  const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  try {
+    new Terminal('never').result('history', { operations: [
+      { id: 'op-1', kind: 'move', status: 'succeeded', phase: 'complete', startedAt: new Date(2026, 9, 22, 23, 17).toISOString(), source: '/a/photos', destination: '/b/photos', retainOriginal: true, backup: '/a/kept', result: { cleanupRequired: true } },
+      { id: 'op-2', kind: 'pack', status: 'interrupted', phase: 'building', startedAt: new Date(2026, 9, 23, 1, 2).toISOString(), source: '/b/photos', error: { message: 'Interrupted' } },
+    ] });
+    expect(output.mock.calls.flat().join('').split('\n')).toEqual([
+      'date        time   kind  status       stage     operation  path',
+      '──────────  ─────  ────  ───────────  ────────  ─────────  ─────────────────────',
+      '2026-10-22  23:17  move  succeeded    -         op-1       /a/photos → /b/photos',
+      '2026-10-23  01:02  pack  interrupted  building  op-2       /b/photos',
+      '✗ pack op-2  Interrupted',
+      '  ↳ The original from move op-1 is kept at /a/kept. To remove it:',
+      '      vestry cleanup op-1',
       '',
     ]);
   } finally { output.mockRestore(); }
