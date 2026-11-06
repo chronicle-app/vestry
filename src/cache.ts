@@ -7,6 +7,7 @@ import { canonical, exists, owned, syncPath } from './fs-util.js';
 import { walk } from './inventory.js';
 import { mtimeNs, restoreMtime } from './timestamps.js';
 import { VestryError, conflict, integrity } from './errors.js';
+import { pathArg } from './output/index.js';
 import { homePath, transaction, workspace, type Context } from './operations.js';
 import { verify } from './package.js';
 import { markChanged, mutateRegistry, overlapping, readRegistry, rememberVerified, resolveIdentity, withCacheMutation, withReference } from './registry.js';
@@ -20,15 +21,15 @@ export function cacheRoot(context: Context): string {
 }
 export async function managedPath(id: string, storage: 'cache' | 'pinned', context: Context): Promise<string> {
   const hex = id.split(':').at(-1)!;
-  if (!/^[0-9a-f]{64}$/.test(hex)) throw conflict('Invalid managed package identity.');
+  if (!/^[0-9a-f]{64}$/.test(hex)) throw conflict('Invalid managed package identity');
   const rawRoot = storage === 'pinned' ? homePath(context.home) : cacheRoot(context);
   const root = join(await canonical(dirname(rawRoot)), basename(rawRoot));
   return join(root, storage === 'pinned' ? 'offline' : 'packages', hex);
 }
 async function managedParent(path: string): Promise<void> {
   // Managed storage must not redirect deletion through a user-created symlink.
-  if (await canonical(path) !== resolve(path)) throw conflict('Managed storage cannot contain symlinked path components.');
-  if (await exists(path) && !(await lstat(path)).isDirectory()) throw conflict('Managed storage must be a directory.');
+  if (await canonical(path) !== resolve(path)) throw conflict('Managed storage cannot contain symlinked path components');
+  if (await exists(path) && !(await lstat(path)).isDirectory()) throw conflict('Managed storage must be a directory');
   await mkdir(path, { recursive: true });
 }
 
@@ -47,14 +48,14 @@ export async function copyPackage(source: string, destination: string, context: 
 // owned managed directories can be retired. Archive locations are never targets.
 async function retire(id: string, storage: 'cache' | 'pinned', context: Context, ownLease?: string): Promise<boolean> {
   const target = await managedPath(id, storage, context);
-  if (await canonical(target) !== target) throw conflict('Managed deletion path contains a symlink.');
+  if (await canonical(target) !== target) throw conflict('Managed deletion path contains a symlink');
   let trash: string | undefined;
   const retired = await mutateRegistry(context, [], async state => {
     const location = state.packages[id]?.locations.find(l => l.path === target && l.storage === storage && l.state !== 'evicted');
     if (!location) return false;
-    if (state.leases.some(lease => overlapping(lease.path, target) && lease.token !== ownLease)) throw conflict('Managed copy has an active reader; refusing removal.');
+    if (state.leases.some(lease => overlapping(lease.path, target) && lease.token !== ownLease)) throw conflict('Something is reading this cached copy', 'Try again once it finishes.');
     if (await exists(target)) {
-      if (!await owned(target, location.owner)) throw conflict('Managed directory was replaced; refusing deletion.');
+      if (!await owned(target, location.owner)) throw conflict('The cached copy\'s folder was replaced, so it wasn\'t removed');
       trash = join(dirname(target), `.evicted-${randomUUID()}`);
       await rename(target, trash); await syncPath(dirname(target), []);
     }
@@ -71,7 +72,7 @@ export async function cacheCopy(ref: string, action: 'add' | 'pin' | 'unpin', co
     return withCacheMutation(id, source.lease, context, async () => {
       const state = await readRegistry(context);
       const hasPinned = state.packages[id].locations.some(l => l.storage === 'pinned' && l.state !== 'evicted');
-      if (action === 'unpin' && !hasPinned) throw conflict('Package is not pinned.');
+      if (action === 'unpin' && !hasPinned) throw conflict('This package isn\'t pinned');
       const storage = action === 'pin' || action === 'add' && (context.pin || hasPinned) ? 'pinned' : 'cache';
       const destination = await managedPath(id, storage, context);
       await workspace(context, [source.path]);
@@ -79,14 +80,14 @@ export async function cacheCopy(ref: string, action: 'add' | 'pin' | 'unpin', co
       let result: Record<string, unknown>;
       if (await exists(destination)) {
         const current = await verify(destination);
-        if (current.packageDigest !== id) { await markChanged(destination, context, current.packageDigest); throw integrity('Managed copy has the wrong package identity.'); }
+        if (current.packageDigest !== id) { await markChanged(destination, context, current.packageDigest); throw integrity('Managed copy has the wrong package identity'); }
         await rememberVerified(destination, current, context, { storage });
         result = { ...current, path: destination, status: 'verified', reused: true };
       } else {
         result = await transaction('cache-copy', source.path, destination,
           stage => copyPackage(source.path, stage, context), async stage => {
             const check = await checkPackage(stage);
-            if (check.identity !== id) throw integrity('Cached copy differs from verified source.');
+            if (check.identity !== id) throw integrity('Cached copy differs from verified source');
             return check;
           }, { ...context, storage });
       }
@@ -116,9 +117,9 @@ export async function cacheEvict(ref: string, context: Context = {}): Promise<Re
   const id = record?.packageDigest ?? resolveIdentity(ref, state);
   return withCacheMutation(id, undefined, context, async () => {
     const latest = await readRegistry(context);
-    if (latest.packages[id].locations.some(l => l.storage === 'pinned' && l.state !== 'evicted')) throw conflict('Package is pinned. Run cache unpin before eviction.');
+    if (latest.packages[id].locations.some(l => l.storage === 'pinned' && l.state !== 'evicted')) throw conflict(`${ref} is pinned`, `Run \`vestry cache unpin ${pathArg(ref)}\` first.`);
     const retired = await retire(id, 'cache', context);
-    if (!retired) throw new VestryError('RESOURCE_UNAVAILABLE', 'No evictable managed copy exists for this package.', 4);
+    if (!retired) throw new VestryError('RESOURCE_UNAVAILABLE', `No cached copy of ${ref} to evict`, 4);
     return { status: 'evicted', contentId: latest.packages[id].payloadDigest, payloadDigest: latest.packages[id].payloadDigest, packageDigest: id };
   });
 }

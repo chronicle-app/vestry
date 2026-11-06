@@ -33,7 +33,7 @@
     "dist/package.json"
   ],
   "engines": {
-    "node": ">=22.2.0"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "build": "tsc",
@@ -45,6 +45,7 @@
     "prepublishOnly": "npm run typecheck && npm run build"
   },
   "dependencies": {
+    "@chronicle.app/logging": "^0.4.0",
     "yauzl": "^3.4.0",
     "yazl": "^3.3.1"
   },

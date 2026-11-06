@@ -1,6 +1,6 @@
 # Contributing
 
-Requires Node 22.2 or newer. TypeScript, ESM, npm, Vitest.
+Requires Node 22.13 or newer. TypeScript, ESM, npm, Vitest.
 
 ```sh
 npm ci

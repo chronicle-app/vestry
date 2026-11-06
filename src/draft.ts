@@ -11,17 +11,17 @@ import { mtimeNs, restoreMtime } from './timestamps.js';
 export const DRAFT = '.vestry-draft.json';
 interface Draft { schemaVersion: 1; kind: 'vestry-draft'; description?: string }
 export async function readDraft(root: string): Promise<{ metadata: Draft; readme: string }> {
-  if (!(await lstat(root)).isDirectory()) throw conflict('Draft must be a regular directory.');
+  if (!(await lstat(root)).isDirectory()) throw conflict('Draft must be a regular directory');
   const names = await readdir(root);
-  if (JSON.stringify(names.sort()) !== JSON.stringify([DRAFT, 'README.txt', 'data'].sort())) throw conflict('Not a draft: expected only .vestry-draft.json, README.txt, and data/.');
+  if (JSON.stringify(names.sort()) !== JSON.stringify([DRAFT, 'README.txt', 'data'].sort())) throw conflict('Not a draft', 'A draft holds only .vestry-draft.json, README.txt, and data/.');
   for (const name of names) {
     const st = await lstat(join(root, name));
     if (name === 'data' ? !st.isDirectory() : !st.isFile()) throw conflict(`Unsupported draft entry: ${name}`);
   }
   let metadata: Draft;
   try { metadata = JSON.parse(await readFile(join(root, DRAFT), 'utf8')) as Draft; }
-  catch (error) { if (error instanceof SyntaxError) throw usage('Malformed draft metadata.'); throw error; }
-  if (!metadata || metadata.schemaVersion !== 1 || metadata.kind !== 'vestry-draft' || (metadata.description !== undefined && (typeof metadata.description !== 'string' || !metadata.description.trim() || /[\r\n]/.test(metadata.description)))) throw usage('Invalid draft metadata.');
+  catch (error) { if (error instanceof SyntaxError) throw usage('Malformed draft metadata'); throw error; }
+  if (!metadata || metadata.schemaVersion !== 1 || metadata.kind !== 'vestry-draft' || (metadata.description !== undefined && (typeof metadata.description !== 'string' || !metadata.description.trim() || /[\r\n]/.test(metadata.description)))) throw usage('Invalid draft metadata');
   return { metadata, readme: await readFile(join(root, 'README.txt'), 'utf8') };
 }
 export async function checkDraft(root: string): Promise<Checked> {
@@ -30,7 +30,7 @@ export async function checkDraft(root: string): Promise<Checked> {
   return { identity: digest('code', all), result: { status: 'draft', payloadFiles: payload.length, payloadBytes: payload.reduce((n, i) => n + i.size, 0n).toString() } };
 }
 export async function gather(sources: string[], destination: string, context: Context = {}): Promise<Record<string, unknown>> {
-  if (!sources.length) throw usage('gather requires at least one source.');
+  if (!sources.length) throw usage('gather needs at least one path');
   sources = sources.map(source => resolve(source)); destination = resolve(destination);
   await outside(destination, sources);
   // Retain each source's top-level name, including for a single directory.
@@ -43,7 +43,7 @@ export async function gather(sources: string[], destination: string, context: Co
     const st = await lstat(source);
     if (st.isFile()) selected.push({ ...await hashFile(source, name), source });
     else if (st.isDirectory()) for (const item of await walk(source)) selected.push({ ...item, path: `${name}/${item.path}`, source: join(source, item.path) });
-    else throw usage(`Only regular files and directories can be gathered: ${source}`);
+    else throw usage(`Not a file or folder: ${source}`, 'Pass regular files and folders.');
   }
   membership(selected.map(i => i.path));
   // Check every source, not merely the first, before creating external state.
@@ -58,7 +58,7 @@ export async function gather(sources: string[], destination: string, context: Co
       await restoreMtime(join(stage, 'data', item.path), time);
     }
     const actual = await walk(join(stage, 'data'));
-    if (digest('code', actual) !== digest('code', selected)) throw integrity('Source changed while gathering; use a stable source or filesystem snapshot.');
+    if (digest('code', actual) !== digest('code', selected)) throw integrity('The files changed while they were gathered', 'Gather from files that aren\'t changing, or from a snapshot.');
     // Read every source again: detect observed byte/membership changes, without
     // claiming these reads constitute a coherent filesystem snapshot.
     const again: Item[] = [];
@@ -66,9 +66,9 @@ export async function gather(sources: string[], destination: string, context: Co
       const name = basename(source), st = await lstat(source);
       if (st.isFile()) again.push(await hashFile(source, name));
       else if (st.isDirectory()) again.push(...(await walk(source)).map(i => ({ ...i, path: `${name}/${i.path}` })));
-      else throw conflict('Source type changed while gathering.');
+      else throw conflict('Source type changed while gathering');
     }
-    if (digest('code', again) !== digest('code', selected)) throw integrity('Source changed while gathering; use a stable source or filesystem snapshot.');
+    if (digest('code', again) !== digest('code', selected)) throw integrity('The files changed while they were gathered', 'Gather from files that aren\'t changing, or from a snapshot.');
     await writeFile(join(stage, 'README.txt'), '');
     await atomicJson(join(stage, DRAFT), { schemaVersion: 1, kind: 'vestry-draft' });
   }, checkDraft, context);
@@ -77,8 +77,8 @@ export async function gather(sources: string[], destination: string, context: Co
 export async function describe(root: string, options: { description?: string; readme?: string; edit?: boolean }): Promise<Record<string, unknown>> {
   root = resolve(root);
   const draft = await readDraft(root);
-  if (!options.edit && options.description === undefined && options.readme === undefined) throw usage('describe requires --edit, --readme FILE, or --description TEXT.');
-  if (options.description !== undefined && (!options.description.trim() || /[\r\n]/.test(options.description))) throw usage('--description must be a nonempty single line.');
+  if (!options.edit && options.description === undefined && options.readme === undefined) throw usage('Nothing to describe', 'Pass `--edit`, `--readme FILE`, or `--description TEXT`.');
+  if (options.description !== undefined && (!options.description.trim() || /[\r\n]/.test(options.description))) throw usage('The description has to be one line', 'Use `--readme FILE` or `--edit` for anything longer.');
   let text = options.readme !== undefined ? await readFile(options.readme, 'utf8') : draft.readme;
   if (!text.trim() && options.description) text = options.description + '\n';
   if (options.edit) {
@@ -87,7 +87,7 @@ export async function describe(root: string, options: { description?: string; re
     await writeFile(editPath, text, { flag: 'wx' });
     try {
       const editor = process.env.VISUAL || process.env.EDITOR;
-      if (!editor) throw usage('Set $EDITOR (for example, export EDITOR="nano") or use --readme FILE.');
+      if (!editor) throw usage('No editor set', 'Set one with `export EDITOR=nano`, or pass `--readme FILE`.');
       await new Promise<void>((yes, no) => {
         // Editor is an explicitly user-configured command; filename is passed
         // separately as a shell positional argument, never interpolated.
@@ -97,7 +97,7 @@ export async function describe(root: string, options: { description?: string; re
       text = await readFile(editPath, 'utf8');
     } finally { await rm(editPath, { force: true }); }
   }
-  if (!text.trim()) throw usage('README must not be empty.');
+  if (!text.trim()) throw usage('The README is empty');
   const temp = join(root, `.readme-${randomUUID()}.tmp`);
   await writeFile(temp, text, { flag: 'wx' }); await rename(temp, join(root, 'README.txt'));
   if (options.description !== undefined) draft.metadata.description = options.description.trim();

@@ -1,5 +1,6 @@
 import { emitKeypressEvents, type Key } from 'node:readline';
 import { VestryError } from './errors.js';
+import { glyphs, tilde, tokens } from './output/index.js';
 
 export interface CopyChoice { path: string; detail?: string }
 const safe = (value: string) => value.replace(/[\x00-\x1f\x7f-\x9f]/g, c => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
@@ -23,19 +24,22 @@ export async function chooseCopy(choices: CopyChoice[], options: {
   if (!choices.length) throw new Error('No copies available to select.');
   options.signal?.throwIfAborted();
   const wasRaw = !!input.isRaw, wasPaused = input.readableFlowing !== true;
+  const t = tokens(!!options.color), question = 'Which copy?';
   let selected = 0, lines = 0;
   const erase = () => { if (lines) output.write(`\x1b[${lines}A\r\x1b[0J`); lines = 0; };
   const render = () => {
     erase();
     const width = Math.max(12, (output.columns || 80) - 4);
-    const count = Math.max(1, Math.min(6, (output.rows || 24) - 5, choices.length));
+    const count = Math.max(1, Math.min(6, (output.rows || 24) - 7, choices.length));
     const start = Math.max(0, Math.min(selected - Math.floor(count / 2), choices.length - count));
-    const rows = [fit('Choose a copy · ↑/↓ move · Enter select · Esc cancel', width)];
+    // As Chronicle asks: the question, the options with the highlighted one in the accent, then the keys.
+    const rows = [t.strong(fit(question, width)), ''];
     for (let i = start; i < start + count; i++) {
-      const label = fit(`${i === selected ? '›' : ' '} ${choices[i].path}`, width);
-      rows.push(options.color && i === selected ? `\x1b[36;1m${label}\x1b[0m` : label);
+      const detail = fit(choices[i].detail ?? '', Math.floor(width / 3));
+      const label = fit(`${i === selected ? glyphs.pointer : ' '} ${tilde(choices[i].path)}`, width - (detail ? detail.length + 2 : 0));
+      rows.push((i === selected ? t.accent(label) : label) + (detail ? t.muted(`  ${detail}`) : ''));
     }
-    rows.push(fit(`${selected + 1}/${choices.length} · ${choices[selected].detail ?? 'Registered copy'}`, width));
+    rows.push('', t.muted(fit([...(choices.length > count ? [`${selected + 1}/${choices.length}`] : []), '↑/↓ move', 'enter select', 'esc cancel'].join(` ${glyphs.bullet} `), width)));
     output.write(rows.join('\n') + '\n'); lines = rows.length;
   };
   return new Promise<string>((resolve, reject) => {
@@ -46,11 +50,11 @@ export async function chooseCopy(choices: CopyChoice[], options: {
       erase(); output.write('\x1b[?25h');
     };
     const fail = (error: Error) => { cleanup(); reject(error); };
-    const cancel = () => fail(new VestryError('INTERRUPTED', 'Copy selection cancelled. No operation started.', 130));
+    const cancel = () => fail(new VestryError('INTERRUPTED', 'Cancelled, nothing changed', 130, { cancelled: true }));
     const keypress = (_text: string, key: Key = {}) => {
       if (key.name === 'escape' || key.ctrl && ['c', 'd'].includes(key.name ?? '')) { cancel(); return; }
       if (key.name === 'return' || key.name === 'enter') {
-        cleanup(); output.write(`Selected copy: ${safe(choices[selected].path)}\n`); resolve(choices[selected].path); return;
+        cleanup(); output.write(`${t.strong(question)} ${t.muted(safe(tilde(choices[selected].path)))}\n`); resolve(choices[selected].path); return;
       }
       if (key.name === 'up') selected = (selected + choices.length - 1) % choices.length;
       else if (key.name === 'down') selected = (selected + 1) % choices.length;

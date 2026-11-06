@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { lstat, mkdir, readFile, readdir, rename, rm, rmdir } from 'node:fs/promises';
 import { atomicJson, canonical, exists, outside, owned, owner, syncPath, syncTree, type Owner } from './fs-util.js';
 import { VestryError, conflict, diagnostic, integrity, usage } from './errors.js';
+import { pathArg } from './output/index.js';
 
 export type Phase = 'planned' | 'building' | 'verified' | 'relocated' | 'reserved' | 'published' | 'cleaning' | 'complete' | 'discarded';
 export interface Operation {
@@ -49,11 +50,11 @@ export async function workspace(context: Context, roots: string[]): Promise<stri
   const home = await canonical(homePath(context.home));
   await outside(home, roots);
   for (let p = home; ; p = dirname(p)) {
-    if (await exists(join(p, 'bagit.txt')) || await exists(join(p, '.vestry-draft.json'))) throw conflict('Application workspace must be outside packages and drafts.');
+    if (await exists(join(p, 'bagit.txt')) || await exists(join(p, '.vestry-draft.json'))) throw conflict('The catalog can\'t be inside a package or draft', 'Pass a `--home` outside your packages.');
     if (dirname(p) === p) break;
   }
   const operations = join(home, 'operations');
-  if (await exists(operations) && !(await lstat(operations)).isDirectory()) throw conflict('Operation storage must be a regular directory.');
+  if (await exists(operations) && !(await lstat(operations)).isDirectory()) throw conflict('Operation storage must be a regular directory');
   await mkdir(operations, { recursive: true });
   return home;
 }
@@ -64,11 +65,11 @@ export async function checkpoint(home: string, op: Operation, phase: Phase, cont
   await context.onPhase?.(phase, op); context.signal?.throwIfAborted();
 }
 function alive(op: Operation): boolean {
-  if (op.host !== hostname()) throw conflict('Operation belongs to another host; recover it on that host.');
+  if (op.host !== hostname()) throw conflict('This operation started on another computer', 'Recover it there.');
   try { process.kill(op.pid, 0); return true; } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ESRCH') return false; return true; }
 }
 export async function newOperation(home: string, kind: Operation['kind'], source: string, destination?: string, storage?: 'cache' | 'pinned'): Promise<Operation> {
-  if (kind === 'cache-copy' && !storage || kind !== 'cache-copy' && storage) throw usage('Managed storage must be specified only for cache-copy operations.');
+  if (kind === 'cache-copy' && !storage || kind !== 'cache-copy' && storage) throw usage('Managed storage must be specified only for cache-copy operations');
   const op: Operation = { schemaVersion: 1, id: randomUUID(), kind, source, phase: 'planned', status: 'running', pid: process.pid, host: hostname(), startedAt: new Date().toISOString(), warnings: [] };
   if (destination) { op.destination = destination; op.staging = join(dirname(destination), `.vestry-${op.id}.tmp`); }
   if (storage) op.storage = storage;
@@ -86,20 +87,20 @@ export async function fail(home: string, op: Operation, error: unknown): Promise
 export type Checked = { identity: string; result: Record<string, unknown> };
 
 async function checkOriginal(path: string, op: Operation, context: Context): Promise<void> {
-  if (!await owned(path, op.sourceOwner)) throw conflict('Original directory was replaced; refusing relocation or removal.');
+  if (!await owned(path, op.sourceOwner)) throw conflict('Original directory was replaced; refusing relocation or removal');
   const { digest, walk } = await import('./inventory.js');
-  if (digest('code', await walk(path, '', new Set(), (file, bytes, total) => context.onActivity?.(`Rechecking original: ${file}`, bytes, total))) !== op.sourceIdentity) throw integrity('Original files changed during the operation; they have been retained.');
+  if (digest('code', await walk(path, '', new Set(), (file, bytes, total) => context.onActivity?.(`Rechecking original: ${file}`, bytes, total))) !== op.sourceIdentity) throw integrity('Original files changed during the operation; they have been retained');
 }
 
 async function relocateOriginal(home: string, op: Operation, context: Context): Promise<void> {
-  if (!op.backup || !op.sourceIdentity || !op.sourceOwner) throw conflict('Missing original ownership record.');
+  if (!op.backup || !op.sourceIdentity || !op.sourceOwner) throw conflict('Missing original ownership record');
   if (await owned(op.backup, op.sourceOwner)) { await checkOriginal(op.backup, op, context); return; }
   await checkOriginal(op.source, op, context);
   if (!op.backupReservation) {
     await mkdir(op.backup, { mode: 0o700 }); op.backupReservation = await owner(op.backup);
     await syncPath(dirname(op.backup), op.warnings); await save(home, op);
   }
-  if (!await owned(op.backup, op.backupReservation) || (await readdir(op.backup)).length) throw conflict('Original backup reservation changed.');
+  if (!await owned(op.backup, op.backupReservation) || (await readdir(op.backup)).length) throw conflict('Original backup reservation changed');
   context.signal?.throwIfAborted();
   await rename(op.source, op.backup);
   await syncPath(dirname(op.source), op.warnings);
@@ -110,7 +111,7 @@ async function finishRelocation(home: string, op: Operation, context: Context, c
   const { mutateRegistry } = await import('./registry.js');
   if (op.kind === 'eject') {
     const { checkEjected } = await import('./eject.js');
-    if (!await owned(op.destination!, op.stageOwner) || (await checkEjected(op.destination!)).identity !== op.expected) throw integrity('Restored files changed; original package retained.');
+    if (!await owned(op.destination!, op.stageOwner) || (await checkEjected(op.destination!)).identity !== op.expected) throw integrity('Restored files changed; original package retained');
     if (!cleanup) {
       await mutateRegistry(context, [], state => {
         const record = state.packages[op.ejectPackageDigest!];
@@ -127,10 +128,10 @@ async function finishRelocation(home: string, op: Operation, context: Context, c
     const { verify } = await import('./package.js');
     const { setMainLocation } = await import('./registry.js');
     context.onActivity?.('Rechecking published destination before retiring the original');
-    if (!await owned(op.destination!, op.stageOwner)) throw integrity('Published destination changed; original has been retained.');
+    if (!await owned(op.destination!, op.stageOwner)) throw integrity('Published destination changed; original has been retained');
     const { quarantineFinderFiles } = await import('./quarantine.js');
     await quarantineFinderFiles(op.destination!, { ...context, expected: op.expected });
-    if ((await verify(op.destination!)).packageDigest !== op.expected) throw integrity('Published destination changed; original has been retained.');
+    if ((await verify(op.destination!)).packageDigest !== op.expected) throw integrity('Published destination changed; original has been retained');
     if (!op.inPlace && !cleanup) await setMainLocation(op.expected!, op.destination!, context, op.kind === 'create');
   }
   if (op.sourceRetired) return;
@@ -156,7 +157,7 @@ async function finishRelocation(home: string, op: Operation, context: Context, c
   // Only the recorded, hidden original directory is eligible for cleanup.
   // A saved checkpoint permits resuming a partially completed recursive removal.
   if (await exists(op.backup!)) {
-    if (!await owned(op.backup!, op.sourceOwner)) throw conflict('Original backup was replaced; refusing cleanup.');
+    if (!await owned(op.backup!, op.sourceOwner)) throw conflict('Original backup was replaced; refusing cleanup');
     await rm(op.backup!, { recursive: true });
     await syncPath(dirname(op.backup!), op.warnings);
   }
@@ -169,7 +170,7 @@ async function finishRelocation(home: string, op: Operation, context: Context, c
 
 async function publish(home: string, op: Operation, context: Context): Promise<void> {
   const destination = op.destination!, staging = op.staging!;
-  if (!await owned(staging, op.stageOwner)) throw conflict('Staging directory ownership changed.');
+  if (!await owned(staging, op.stageOwner)) throw conflict('Staging directory ownership changed');
   if (op.kind === 'create' || op.kind === 'eject' || op.inPlace) await relocateOriginal(home, op, context);
   if (!op.reservation) {
     // mkdir is the no-clobber claim. Rename only replaces our recorded empty
@@ -180,7 +181,7 @@ async function publish(home: string, op: Operation, context: Context): Promise<v
     await syncPath(dirname(destination), op.warnings);
     await checkpoint(home, op, 'reserved', context);
   }
-  if (!await owned(destination, op.reservation) || (await readdir(destination)).length !== 0) throw conflict('Destination reservation changed; refusing publication.');
+  if (!await owned(destination, op.reservation) || (await readdir(destination)).length !== 0) throw conflict('Destination reservation changed; refusing publication');
   context.signal?.throwIfAborted();
   await rename(staging, destination);
   await syncPath(dirname(destination), op.warnings);
@@ -190,9 +191,9 @@ async function publish(home: string, op: Operation, context: Context): Promise<v
 export async function transaction(kind: Operation['kind'], source: string, destination: string, build: (staging: string) => Promise<void>, check: (root: string) => Promise<Checked>, context: Context = {}): Promise<Record<string, unknown>> {
   source = await canonical(source);
   destination = await canonical(destination);
-  if (context.inPlace && !['pack', 'unpack'].includes(kind)) throw usage('In-place conversion is only valid for pack/unpack.');
+  if (context.inPlace && !['pack', 'unpack'].includes(kind)) throw usage('In-place conversion is only valid for pack/unpack');
   if (kind === 'create' || kind === 'eject' || context.inPlace) {
-    if (source !== destination) throw conflict('In-place creation must retain the source path.');
+    if (source !== destination) throw conflict('In-place creation must retain the source path');
   } else {
     await outside(destination, [source]);
     if (await exists(destination)) throw conflict(`Destination exists: ${destination}`);
@@ -216,7 +217,7 @@ export async function transaction(kind: Operation['kind'], source: string, desti
       context.onActivity?.('Reading original files before copying');
       op.sourceOwner = await owner(source);
       const originals = await walk(source, '', new Set(), (path, bytes, total) => context.onActivity?.(`Reading original: ${path}`, bytes, total));
-      if (op.zipEntry && (originals.filter(item => item.path !== '.DS_Store').length !== 1 || !originals.some(item => item.path === op.zipEntry))) throw conflict('ZIP folder contents changed before creation; original files retained.');
+      if (op.zipEntry && (originals.filter(item => item.path !== '.DS_Store').length !== 1 || !originals.some(item => item.path === op.zipEntry))) throw conflict('ZIP folder contents changed before creation; original files retained');
       op.sourceIdentity = digest('code', originals);
       op.backup = join(dirname(source), `.vestry-${op.id}.original`);
     }
@@ -243,7 +244,7 @@ export async function transaction(kind: Operation['kind'], source: string, desti
       await quarantineFinderFiles(op.staging!, context);
     }
     const checked = await check(op.staging!);
-    if (op.zipAdoption && checked.identity !== op.expected) throw integrity('Moved ZIP differs from the prepared package; retained in staging for recovery.');
+    if (op.zipAdoption && checked.identity !== op.expected) throw integrity('Moved ZIP differs from the prepared package; retained in staging for recovery');
     op.expected = checked.identity; op.result = { ...checked.result, ...(op.zipAdoption ? { sourceRetained: false, sourceMoved: true } : {}) };
     timed('Verify staged package');
     context.onActivity?.('Flushing the verified copy to storage');
@@ -254,7 +255,7 @@ export async function transaction(kind: Operation['kind'], source: string, desti
     timed('Recheck original and publish');
     if (kind === 'copy') {
       const published = await check(destination);
-      if (!await owned(destination, op.stageOwner) || published.identity !== op.expected) throw integrity('Published copy changed; original retained.');
+      if (!await owned(destination, op.stageOwner) || published.identity !== op.expected) throw integrity('Published copy changed; original retained');
     }
     await registerPublished(op, { ...context, home });
     await finishRelocation(home, op, { ...context, home });
@@ -311,27 +312,27 @@ export async function retireAbandoned(id: string, context: Context = {}): Promis
 }
 
 async function loadOperation(home: string, id: string): Promise<Operation> {
-  if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/.test(id)) throw usage('Invalid operation ID.');
+  if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/.test(id)) throw usage(`Not an operation ID: ${id}`, 'Run `vestry history` to see operation IDs.');
   let op: Operation;
   try { op = JSON.parse(await readFile(recordPath(home, id), 'utf8')); }
-  catch (e) { if (e instanceof SyntaxError) throw usage('Malformed operation record.'); throw e; }
+  catch (e) { if (e instanceof SyntaxError) throw usage('Malformed operation record'); throw e; }
   if (!op || op.schemaVersion !== 1 || op.id !== id || !['gather', 'seal', 'pack', 'unpack', 'verify', 'cache-copy', 'create', 'move', 'copy', 'eject', 'import-zip'].includes(op.kind) ||
       !['planned', 'building', 'verified', 'relocated', 'reserved', 'published', 'cleaning', 'complete', 'discarded'].includes(op.phase) ||
       !['running', 'succeeded', 'failed', 'interrupted', 'discarded'].includes(op.status) ||
       !Number.isSafeInteger(op.pid) || op.pid <= 0 || typeof op.host !== 'string' || typeof op.source !== 'string' ||
-      typeof op.startedAt !== 'string' || !Array.isArray(op.warnings)) throw usage('Invalid operation record.');
-  if (op.kind !== 'verify' && (!op.destination || !op.staging)) throw usage('Operation record is missing publication paths.');
-  if (op.kind === 'cache-copy' && !op.storage || op.storage !== undefined && !['cache', 'pinned'].includes(op.storage)) throw usage('Invalid managed storage in operation record.');
-  if (op.expected && !/^vestry-(package|code)-v1:sha256:[0-9a-f]{64}$/.test(op.expected)) throw usage('Invalid recorded identity.');
-  if (op.destination && (resolve(op.destination) !== op.destination || op.staging !== join(dirname(op.destination), `.vestry-${id}.tmp`))) throw conflict('Invalid recorded staging/destination paths.');
-  if (op.backup && (op.backup !== join(dirname(op.source), `.vestry-${id}.original`) || !['create', 'move', 'eject'].includes(op.kind) && !op.inPlace)) throw conflict('Invalid original backup path.');
-  if (op.kind === 'eject' && (!op.ejectPackageDigest || !/^vestry-package-v1:sha256:[0-9a-f]{64}$/.test(op.ejectPackageDigest))) throw usage('Missing original package identity for eject.');
-  if (op.zipAdoption && (op.kind !== 'import-zip' || !op.expected || !/^[0-9a-f]{64}$/.test(op.zipAdoption.sha256) || !['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => /^-?[0-9]+$/.test(String(op.zipAdoption![key as keyof typeof op.zipAdoption]))))) throw usage('Invalid ZIP adoption record.');
-  if (op.zipEntry !== undefined && (op.kind !== 'create' || !/^[^/\\]+\.zip$/i.test(op.zipEntry))) throw usage('Invalid ZIP folder creation record.');
-  if (op.retainOriginal !== undefined && (op.retainOriginal !== true || !['move', 'eject'].includes(op.kind))) throw usage('Invalid original retention policy.');
-  if (op.inPlace !== undefined && (op.inPlace !== true || !['pack', 'unpack'].includes(op.kind))) throw usage('Invalid in-place conversion record.');
-  if ((op.kind === 'create' || op.kind === 'eject' || op.inPlace) && op.source !== op.destination) throw conflict('Invalid in-place operation paths.');
-  if (op.alias !== undefined && (!['create', 'import-zip'].includes(op.kind) || !/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(op.alias))) throw usage('Invalid recorded alias.');
+      typeof op.startedAt !== 'string' || !Array.isArray(op.warnings)) throw usage('Invalid operation record');
+  if (op.kind !== 'verify' && (!op.destination || !op.staging)) throw usage('Operation record is missing publication paths');
+  if (op.kind === 'cache-copy' && !op.storage || op.storage !== undefined && !['cache', 'pinned'].includes(op.storage)) throw usage('Invalid managed storage in operation record');
+  if (op.expected && !/^vestry-(package|code)-v1:sha256:[0-9a-f]{64}$/.test(op.expected)) throw usage('Invalid recorded identity');
+  if (op.destination && (resolve(op.destination) !== op.destination || op.staging !== join(dirname(op.destination), `.vestry-${id}.tmp`))) throw conflict('Invalid recorded staging/destination paths');
+  if (op.backup && (op.backup !== join(dirname(op.source), `.vestry-${id}.original`) || !['create', 'move', 'eject'].includes(op.kind) && !op.inPlace)) throw conflict('Invalid original backup path');
+  if (op.kind === 'eject' && (!op.ejectPackageDigest || !/^vestry-package-v1:sha256:[0-9a-f]{64}$/.test(op.ejectPackageDigest))) throw usage('Missing original package identity for eject');
+  if (op.zipAdoption && (op.kind !== 'import-zip' || !op.expected || !/^[0-9a-f]{64}$/.test(op.zipAdoption.sha256) || !['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => /^-?[0-9]+$/.test(String(op.zipAdoption![key as keyof typeof op.zipAdoption]))))) throw usage('Invalid ZIP adoption record');
+  if (op.zipEntry !== undefined && (op.kind !== 'create' || !/^[^/\\]+\.zip$/i.test(op.zipEntry))) throw usage('Invalid ZIP folder creation record');
+  if (op.retainOriginal !== undefined && (op.retainOriginal !== true || !['move', 'eject'].includes(op.kind))) throw usage('Invalid original retention policy');
+  if (op.inPlace !== undefined && (op.inPlace !== true || !['pack', 'unpack'].includes(op.kind))) throw usage('Invalid in-place conversion record');
+  if ((op.kind === 'create' || op.kind === 'eject' || op.inPlace) && op.source !== op.destination) throw conflict('Invalid in-place operation paths');
+  if (op.alias !== undefined && (!['create', 'import-zip'].includes(op.kind) || !/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(op.alias))) throw usage('Invalid recorded alias');
   return op;
 }
 
@@ -339,7 +340,7 @@ async function registerPublished(op: Operation, context: Context): Promise<void>
   if (op.kind === 'gather' || op.kind === 'verify' || op.kind === 'eject') return;
   if (op.kind === 'cache-copy') {
     const { managedPath } = await import('./cache.js');
-    if (op.destination !== await managedPath(op.expected!, op.storage!, context)) throw conflict('Cache publication does not match its managed destination.');
+    if (op.destination !== await managedPath(op.expected!, op.storage!, context)) throw conflict('Cache publication does not match its managed destination');
   }
   const { rememberVerified } = await import('./registry.js');
   await rememberVerified(op.destination!, op.result as unknown as import('./package.js').Verification, context, { storage: op.storage, alias: op.alias, metadata: op.catalogMetadata, originalZipName: op.zipEntry ?? (op.kind === 'import-zip' ? basename(op.source) : undefined) });
@@ -365,17 +366,17 @@ async function recoverOperation(id: string, check: (root: string, kind: Operatio
   let op = await loadOperation(home, id);
   if (op.status === 'succeeded' || op.status === 'discarded') return { ...op.result, operationId: id, status: op.status, path: op.destination };
   await workspace(context, [op.source, ...(op.destination ? [op.destination] : [])]);
-  if (op.status === 'running' && alive(op)) throw conflict('Operation is still active; wait for it to finish or interrupt it first.');
+  if (op.status === 'running' && alive(op)) throw conflict('This operation is still active', 'Wait for it to finish, or interrupt it first.');
   const lock = join(dirname(recordPath(home, id)), 'recovery.lock');
   if (releaseLock) {
     const holder = JSON.parse(await readFile(join(lock, 'owner.json'), 'utf8')) as { pid: number; host: string };
-    if (!Number.isSafeInteger(holder.pid) || holder.pid <= 0 || typeof holder.host !== 'string') throw conflict('Invalid recovery lock owner.');
-    if (alive({ ...op, ...holder })) throw conflict('Recovery lock is held by a live process.');
+    if (!Number.isSafeInteger(holder.pid) || holder.pid <= 0 || typeof holder.host !== 'string') throw conflict('Invalid recovery lock owner');
+    if (alive({ ...op, ...holder })) throw conflict('Recovery lock is held by a live process');
     await rm(join(lock, 'owner.json')); await rmdir(lock);
-    return { operationId: id, status: 'lock-released', message: 'Recovery lock released. Rerun recover for this operation.' };
+    return { operationId: id, status: 'lock-released', message: `Run \`vestry recover ${id}\` to finish it.` };
   }
   try { await mkdir(lock); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw conflict('Recovery is locked. If its process was killed, use recover ID --release-lock; live owners cannot be unlocked.'); throw error; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw conflict('Another recover holds the lock on this operation', `If its process was killed, run \`vestry recover ${id} --release-lock\`. A running one can\'t be unlocked.`); throw error; }
   // Never break recovery locks based on age. Explicit release checks the host
   // and PID, and fails closed if the owner record is missing or PID was reused.
   await atomicJson(join(lock, 'owner.json'), { pid: process.pid, host: hostname() });
@@ -385,12 +386,12 @@ async function recoverOperation(id: string, check: (root: string, kind: Operatio
     if (op.kind === 'verify') {
       op.status = discard ? 'discarded' : 'interrupted'; op.phase = discard ? 'discarded' : op.phase;
       op.endedAt = new Date().toISOString(); await save(home, op);
-      return { operationId: id, status: op.status, message: 'Previous verification did not establish validity; run verify again.' };
+      return { operationId: id, status: op.status, message: `The last check didn't finish. Run \`vestry check ${pathArg(op.source)}\` again.` };
     }
     if (op.zipAdoption && !await owned(op.destination!, op.stageOwner)) {
       const { relocateZip } = await import('./zip-adoption.js');
       if (discard) {
-        if (!await exists(op.source) || await exists(join(op.staging!, 'data.zip'))) throw conflict('The original ZIP may have moved into staging. Resume recovery; discard cannot remove it.');
+        if (!await exists(op.source) || await exists(join(op.staging!, 'data.zip'))) throw conflict('The original ZIP may be in staging, so its work can\'t be thrown away', `Run \`vestry recover ${id}\` to finish it.`);
       } else await relocateZip(home, op, context);
     }
     const checkRecovered = async (path: string) => {
@@ -403,23 +404,23 @@ async function recoverOperation(id: string, check: (root: string, kind: Operatio
     // A retry can promote a completed but not yet verified creation only by
     // checking both the original snapshot and the staged logical payload.
     if (!discard && context.resumeCreation && op.kind === 'create' && op.phase === 'building' && !op.expected) {
-      if (!await owned(op.source, op.sourceOwner) || !await owned(op.staging!, op.stageOwner)) throw conflict('Original or staging was replaced; refusing automatic recovery.');
+      if (!await owned(op.source, op.sourceOwner) || !await owned(op.staging!, op.stageOwner)) throw conflict('Original or staging was replaced; refusing automatic recovery');
       const { digest, walk } = await import('./inventory.js');
       context.onActivity?.('Checking original files against the interrupted creation');
       const original = await walk(op.source, '', new Set(), (path, bytes, total) => context.onActivity?.(`Checking original: ${path}`, bytes, total));
-      if (digest('code', original) !== op.sourceIdentity) throw integrity('Original files changed since the interrupted creation. They have been retained.');
+      if (digest('code', original) !== op.sourceIdentity) throw integrity('The original files changed since the create was interrupted', 'They\'re kept as they are.');
       const actual = await checkRecovered(op.staging!);
       let payload = digest('payload', original.map(item => ({ ...item, path: 'data/' + item.path })));
       if (op.zipEntry) {
         const zipOriginal = original.find(item => item.path === op.zipEntry);
-        if (original.filter(item => item.path !== '.DS_Store').length !== 1 || !zipOriginal) throw integrity('ZIP folder source no longer contains exactly the recorded archive.');
+        if (original.filter(item => item.path !== '.DS_Store').length !== 1 || !zipOriginal) throw integrity('ZIP folder source no longer contains exactly the recorded archive');
         const { hashFile } = await import('./inventory.js');
         const archive = await hashFile(join(op.staging!, 'data.zip'), 'data.zip');
-        if (archive.sha256 !== zipOriginal.sha256 || archive.size !== zipOriginal.size) throw integrity('Staged ZIP differs from original archive.');
+        if (archive.sha256 !== zipOriginal.sha256 || archive.size !== zipOriginal.size) throw integrity('Staged ZIP differs from original archive');
         // Full staged verification already checked every ZIP member and its manifest.
         payload = actual.result.payloadDigest as string;
       }
-      if (actual.result.payloadDigest !== payload) throw integrity('Staged payload does not match the original files. Original retained.');
+      if (actual.result.payloadDigest !== payload) throw integrity('The staged copy doesn\'t match the original files', 'The originals are kept.');
       op.expected = actual.identity; op.result = actual.result;
       await syncTree(op.staging!, op.warnings);
       await checkpoint(home, op, 'verified', context);
@@ -428,29 +429,29 @@ async function recoverOperation(id: string, check: (root: string, kind: Operatio
     // directory and expected identity before recognizing successful publication.
     if (op.expected && await owned(op.destination!, op.stageOwner)) {
       const actual = await checkRecovered(op.destination!);
-      if (actual.identity !== op.expected) throw integrity('Published package differs from the recorded identity.');
+      if (actual.identity !== op.expected) throw integrity('Published package differs from the recorded identity');
       op.result = actual.result; op.phase = 'complete'; op.status = 'succeeded';
     } else if (discard) {
       const originalIntact = (op.kind === 'create' || op.kind === 'eject' || op.inPlace) && (await owned(op.source, op.sourceOwner) || !op.stageOwner && !op.expected);
-      if (op.backup && await owned(op.backup, op.sourceOwner)) throw conflict('Original has been relocated. Resume recovery to finish publication; discard cannot remove the original.');
-      if (!originalIntact && await exists(op.destination!) && (!await owned(op.destination!, op.reservation) || (await readdir(op.destination!)).length !== 0)) throw conflict('Cannot discard an unowned or nonempty destination.');
+      if (op.backup && await owned(op.backup, op.sourceOwner)) throw conflict('The original was already moved aside, so its work can\'t be thrown away', `Run \`vestry recover ${id}\` to finish it.`);
+      if (!originalIntact && await exists(op.destination!) && (!await owned(op.destination!, op.reservation) || (await readdir(op.destination!)).length !== 0)) throw conflict('Cannot discard an unowned or nonempty destination');
       if (await exists(op.staging!)) {
-        if (!await owned(op.staging!, op.stageOwner)) throw conflict('Cannot discard an unowned staging directory.');
+        if (!await owned(op.staging!, op.stageOwner)) throw conflict('Cannot discard an unowned staging directory');
         await rm(op.staging!, { recursive: true });
       }
       if (!originalIntact && await exists(op.destination!)) {
         await rmdir(op.destination!); // Never recursively remove a destination.
       }
       if (op.backup && await exists(op.backup)) {
-        if (!await owned(op.backup, op.backupReservation) || (await readdir(op.backup)).length) throw conflict('Cannot discard an unowned or nonempty original backup reservation.');
+        if (!await owned(op.backup, op.backupReservation) || (await readdir(op.backup)).length) throw conflict('Cannot discard an unowned or nonempty original backup reservation');
         await rmdir(op.backup);
       }
       op.phase = 'discarded'; op.status = 'discarded';
     } else {
-      if (!op.expected || !['verified', 'relocated', 'reserved', 'published'].includes(op.phase)) throw conflict('Build did not reach verified staging. Use recover ID --discard, then rerun the command.');
-      if (!await owned(op.staging!, op.stageOwner)) throw conflict('Verified staging directory is missing or replaced.');
+      if (!op.expected || !['verified', 'relocated', 'reserved', 'published'].includes(op.phase)) throw conflict('It stopped before its copy was checked', `Run \`vestry recover ${id} --discard\`, then run the command again.`);
+      if (!await owned(op.staging!, op.stageOwner)) throw conflict('Verified staging directory is missing or replaced');
       const actual = await checkRecovered(op.staging!);
-      if (actual.identity !== op.expected) throw integrity('Staging content differs from the recorded identity.');
+      if (actual.identity !== op.expected) throw integrity('Staging content differs from the recorded identity');
       context.onActivity?.('Flushing the verified copy to storage');
       await syncTree(op.staging!, op.warnings);
       await publish(home, op, context);
@@ -473,20 +474,20 @@ async function recoverOperation(id: string, check: (root: string, kind: Operatio
 export async function cleanupMove(id: string, context: Context = {}): Promise<Record<string, unknown>> {
   const home = homePath(context.home);
   const initial = await loadOperation(home, id);
-  if (!['move', 'eject'].includes(initial.kind) || !initial.retainOriginal || initial.status !== 'succeeded' || !initial.expected) throw conflict('Cleanup requires a completed move or eject. Recover unfinished moves first.');
+  if (!['move', 'eject'].includes(initial.kind) || !initial.retainOriginal || initial.status !== 'succeeded' || !initial.expected) throw conflict('Only a finished move or eject can be cleaned up', 'Run `vestry recover` to finish it first.');
   const { withCacheMutation, withPathMutation } = await import('./registry.js');
   const protectOutput = <T>(action: () => Promise<T>) => initial.kind === 'eject' ? withPathMutation(initial.destination!, context, action) : action();
   return withCacheMutation(initial.ejectPackageDigest ?? initial.expected, undefined, context, () => withPathMutation(initial.backup!, context, () => protectOutput(async () => {
     const op = await loadOperation(home, id);
     if (op.sourceRetired) return { operationId: id, status: 'already-cleaned', path: op.destination };
     // Refuse deletion if either this operation or a fresh flush reports limited durability.
-    if (op.warnings.length) throw conflict('Move recorded durability warnings; recovery copy retained.');
+    if (op.warnings.length) throw conflict('The move couldn\'t flush everything to disk, so the recovery copy stays');
     await syncTree(op.destination!, op.warnings);
     await syncPath(dirname(op.destination!), op.warnings);
-    if (op.warnings.length) { await save(home, op); throw conflict('Destination durability could not be established; recovery copy retained.'); }
+    if (op.warnings.length) { await save(home, op); throw conflict('Couldn\'t confirm the new copy is flushed to disk, so the recovery copy stays'); }
     await finishRelocation(home, op, context, true);
     op.result = { ...op.result, cleanupRequired: false, recoveryCopy: undefined };
     op.phase = 'complete'; await save(home, op);
-    return { operationId: id, status: 'cleaned', path: op.destination, message: 'Retained original removed after rechecking the destination.' };
+    return { operationId: id, status: 'cleaned', path: op.destination, message: 'The new copy was checked again before the original was removed.' };
   })));
 }

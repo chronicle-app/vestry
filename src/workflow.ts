@@ -2,6 +2,7 @@ import { join, resolve } from 'node:path';
 import { buildBag, buildConversion, requirePackageDirectory, verify } from './package.js';
 import { readDraft, checkDraft } from './draft.js';
 import { VestryError, conflict, diagnostic, integrity, usage } from './errors.js';
+import { pathArg } from './output/index.js';
 import { markChanged, rememberVerified } from './registry.js';
 import { fail, newOperation, save, transaction, workspace, type Checked, type Context, type Operation } from './operations.js';
 import { quarantineFinderFiles } from './quarantine.js';
@@ -15,11 +16,11 @@ export async function sealDraft(source: string, destination: string, options: Co
   source = resolve(source);
   const before = await readDraft(source);
   if (options.catalogOnly) options = { ...options, catalogMetadata: { description: before.metadata.description, notes: before.readme } };
-  if (!options.catalogOnly && !before.readme.trim()) throw usage('Draft README is empty. Run vestry describe DRAFT --edit or --description TEXT first.');
+  if (!options.catalogOnly && !before.readme.trim()) throw usage('The draft\'s README is empty', `Run \`vestry describe ${pathArg(source)} --edit\` to write one.`);
   return transaction('seal', source, destination, async stage => {
     await buildBag(join(source, 'data'), stage, options.catalogOnly ? undefined : before.readme, options.catalogOnly ? undefined : before.metadata.description, options.packed, options.signal, options.onActivity);
     const after = await readDraft(source);
-    if (before.readme !== after.readme || JSON.stringify(before.metadata) !== JSON.stringify(after.metadata)) throw conflict('Draft description changed during sealing.');
+    if (before.readme !== after.readme || JSON.stringify(before.metadata) !== JSON.stringify(after.metadata)) throw conflict('Draft description changed during sealing');
   }, checkPackage, options);
 }
 
@@ -29,17 +30,17 @@ export async function convertPackage(source: string, destination: string, target
   const before = await verify(source);
   if (options.expected && before.packageDigest !== options.expected) {
     await markChanged(source, options, before.packageDigest);
-    throw new VestryError('LOCATION_CHANGED', 'Selected path contains a different package revision.', 5, { expected: options.expected, actual: before.packageDigest });
+    throw new VestryError('LOCATION_CHANGED', 'A different version of the package is at this path', 5, { expected: options.expected, actual: before.packageDigest });
   }
-  if (before.representation === target) throw conflict(`Package is already ${target}; no conversion needed.`);
+  if (before.representation === target) throw conflict(`Package is already ${target}`);
   const result = await transaction(target === 'packed' ? 'pack' : 'unpack', source, destination,
     async stage => {
       const current = await verify(source);
-      if (current.packageDigest !== before.packageDigest) throw integrity('Source changed before conversion; original retained.');
+      if (current.packageDigest !== before.packageDigest) throw integrity('The package changed before it could be converted', 'The original is untouched.');
       await buildConversion(source, stage, before, options);
     }, async stage => {
       const checked = await checkPackage(stage);
-      if (checked.identity !== before.packageDigest) throw integrity('Conversion changed package identity.');
+      if (checked.identity !== before.packageDigest) throw integrity('Conversion changed package identity');
       return checked;
     }, options);
   return { ...result, ...(quarantined ? { quarantined: [quarantined] } : {}) };
@@ -62,7 +63,7 @@ export async function verifyRecorded(source: string, context: Context & { regist
     const result = await verify(source); context.signal?.throwIfAborted();
     if (context.expected && result.packageDigest !== context.expected) {
       if (context.register !== false) await markChanged(source, context, result.packageDigest);
-      throw new VestryError('LOCATION_CHANGED', 'Selected path contains a different package revision.', 5, { expected: context.expected, actual: result.packageDigest });
+      throw new VestryError('LOCATION_CHANGED', 'A different version of the package is at this path', 5, { expected: context.expected, actual: result.packageDigest });
     }
     if (context.register !== false) await rememberVerified(source, result, context);
     op.result = { ...result, ...(quarantined ? { quarantined: [quarantined] } : {}) }; op.expected = result.packageDigest; op.phase = 'complete'; op.status = 'succeeded'; op.endedAt = new Date().toISOString();

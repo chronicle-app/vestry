@@ -17,7 +17,7 @@ it('selects with arrow keys and Enter, restoring the terminal', async () => {
   expect(t.input.isPaused()).toBe(true);
   expect(t.input.listenerCount('keypress')).toBe(0);
   expect(t.text()).toContain('Additional copy · expanded');
-  expect(t.text()).toContain('Selected copy: /network/archive');
+  expect(t.text()).toContain('Which copy? /network/archive');
   expect(t.text()).toContain('\x1b[?25h');
 });
 it('cancels on Ctrl-C and restores raw mode and cursor', async () => {
@@ -25,7 +25,7 @@ it('cancels on Ctrl-C and restores raw mode and cursor', async () => {
   const rejected = expect(selected).rejects.toMatchObject({ code: 'INTERRUPTED', exitCode: 130 });
   t.input.write('\x03'); await rejected;
   expect(t.input.isRaw).toBe(false); expect(t.input.listenerCount('keypress')).toBe(0);
-  expect(t.text()).not.toContain('Selected copy:'); expect(t.text()).toContain('\x1b[?25h');
+  expect(t.text()).not.toContain('Which copy? /'); expect(t.text()).toContain('\x1b[?25h');
 });
 it('handles external cancellation and escapes control characters in paths', async () => {
   const t = terminal(), controller = new AbortController();

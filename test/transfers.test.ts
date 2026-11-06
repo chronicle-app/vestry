@@ -63,7 +63,7 @@ it('refuses cleanup when destination is corrupt, original changed, or durability
   const path = recordPath(context.home!, operation), op = JSON.parse(await readFile(path, 'utf8'));
   op.warnings.push('Filesystem does not support all requested fsync operations; crash durability is limited.');
   await writeFile(path, JSON.stringify(op));
-  await expect(cleanupMove(operation, context)).rejects.toThrow('durability');
+  await expect(cleanupMove(operation, context)).rejects.toThrow('flush everything to disk');
   expect((await verify(backup)).packageDigest).toBe(id);
 });
 

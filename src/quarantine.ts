@@ -35,7 +35,7 @@ export async function quarantineFinderFiles(source: string, context: Context): P
   // Do not "repair" a broken manifest or conceal unrelated corruption. All
   // preserved bytes and manifests must verify before anything is moved.
   const checked = await verify(source, new Set(candidates));
-  if (context.expected && checked.packageDigest !== context.expected) throw integrity('Package identity changed; Finder metadata has not been moved.');
+  if (context.expected && checked.packageDigest !== context.expected) throw integrity('Package identity changed; Finder metadata has not been moved');
   return preserveFinderFiles(source, candidates, checked.packageDigest, context);
 }
 
@@ -49,7 +49,7 @@ export async function preserveZipFolderFinderFile(source: string, context: Conte
 async function preserveFinderFiles(source: string, candidates: string[], packageDigest: string, context: Context, copyOnly = false): Promise<QuarantineReport> {
   const home = await workspace(context, [source]);
   const parent = join(home, 'quarantine');
-  if (await canonical(parent) !== parent) throw conflict('Quarantine directory must not redirect through symlinks.');
+  if (await canonical(parent) !== parent) throw conflict('Quarantine directory must not redirect through symlinks');
   await mkdir(parent, { recursive: true });
   const directory = join(parent, randomUUID()); await mkdir(directory);
   const report: QuarantineReport = { directory, files: [], warnings: [], ...(copyOnly ? { copyOnly: true } : {}) };
@@ -63,9 +63,9 @@ async function preserveFinderFiles(source: string, candidates: string[], package
     for (const path of candidates) {
       context.signal?.throwIfAborted();
       const input = join(source, path), output = join(directory, 'files', path);
-      if (await canonical(input) !== input) throw conflict('Finder metadata path was replaced with a symlink.');
+      if (await canonical(input) !== input) throw conflict('Finder metadata path was replaced with a symlink');
       const stat = await lstat(input, { bigint: true });
-      if (!stat.isFile()) throw conflict('Finder metadata is no longer a regular file.');
+      if (!stat.isFile()) throw conflict('Finder metadata is no longer a regular file');
       const before = await hashFile(input, path);
       const entry = { path, sha256: before.sha256, bytes: before.size.toString(), status: 'planned' as 'planned' | 'copied' | 'quarantined' };
       record.files.push(entry); await save();
@@ -73,13 +73,13 @@ async function preserveFinderFiles(source: string, candidates: string[], package
       await copyFile(input, output, constants.COPYFILE_EXCL);
       await syncTree(directory, warnings); await syncPath(parent, warnings);
       const copied = await hashFile(output, path);
-      if (copied.sha256 !== before.sha256 || copied.size !== before.size) throw integrity('Quarantine copy differs; original retained.');
+      if (copied.sha256 !== before.sha256 || copied.size !== before.size) throw integrity('Quarantine copy differs; original retained');
       entry.status = 'copied'; await save();
       const after = await lstat(input, { bigint: true }), current = await hashFile(input, path);
-      if (!after.isFile() || after.dev !== stat.dev || after.ino !== stat.ino || current.sha256 !== before.sha256 || current.size !== before.size) throw conflict('Finder metadata changed during quarantine; original retained.');
+      if (!after.isFile() || after.dev !== stat.dev || after.ino !== stat.ino || current.sha256 !== before.sha256 || current.size !== before.size) throw conflict('Finder metadata changed during quarantine; original retained');
       context.signal?.throwIfAborted();
       if (copyOnly) {
-        if (warnings.length) throw conflict('Finder metadata copy could not be durably flushed; original folder retained.');
+        if (warnings.length) throw conflict('Finder metadata copy could not be durably flushed; original folder retained');
         report.files.push(path); continue;
       }
       await unlink(input); report.files.push(path);
