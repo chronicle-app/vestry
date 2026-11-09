@@ -1,6 +1,6 @@
 {
   "name": "@chronicle.app/vestry",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A personal digital archiving CLI for packaging, verifying, and tracking your records and exports",
   "keywords": [
     "bagit",

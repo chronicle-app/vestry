@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - `survey` counts the records in each export a package holds, using Chronicle's `chronicle` command, and keeps the readers it finds and each dated survey in the catalog. It prints a row per record type, for grep and awk
 - `scan` lists the exports Chronicle recognizes outside any package, as folders or ZIPs to package next
